@@ -2,6 +2,13 @@ package com.linknav.map
 
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Text
+import androidx.compose.ui.Alignment
+import android.util.Log
+import org.maplibre.android.MapLibre
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.*
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -27,6 +34,22 @@ fun LinkNavMap(
     styleUri: String = "https://tiles.openfreemap.org/styles/liberty"
 ) {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val context = LocalContext.current
+    val mapLibreReady = remember(context) {
+        runCatching {
+            MapLibre.getInstance(context.applicationContext)
+            true
+        }.getOrElse {
+            Log.e("LINKNAV", "MapLibre initialization failed", it)
+            false
+        }
+    }
+    if (!mapLibreReady) {
+        Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text("Mapa temporariamente indisponível")
+        }
+        return
+    }
     var mapView by remember { mutableStateOf<MapView?>(null) }
     var styleReady by remember { mutableStateOf(false) }
     DisposableEffect(lifecycle) {

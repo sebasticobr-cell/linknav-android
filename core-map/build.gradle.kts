@@ -25,7 +25,7 @@ dependencies {
 }
 
 dependencies {
-    implementation("org.maplibre.gl:android-sdk:13.6.1")
+    implementation("org.maplibre.gl:android-sdk-opengl:13.6.1")
 }
 
 dependencies { implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0") }
