@@ -22,7 +22,7 @@ class DuoRealtimeClient {
                     client.webSocket(urlString="$wsUrl/realtime/duo/$sessionId?token=$token") {
                         val sender=launch {
                             while (isActive) {
-                                val text = outgoing.receiveCatching().getOrNull() ?: break
+                                val text = this@DuoRealtimeClient.outgoing.receiveCatching().getOrNull() ?: break
                                 send(Frame.Text(text))
                             }
                         }
