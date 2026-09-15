@@ -37,9 +37,12 @@ fun ArNavigationScreen(routePoints:List<GeoPoint>,onBack:()->Unit){
         if(here==null || heading.isNaN() || routePoints.isEmpty()) null
         else {
             val match=MapMatcher.match(here,routePoints)
-            val nextIndex=(match.segmentIndex+2).coerceIn(0,routePoints.lastIndex)
-            val target=routePoints[nextIndex]
-            ArDirectionMath.cue(here,target,heading,"Próximo ponto da rota")
+            if (match == null) null
+            else {
+                val nextIndex=(match.segmentIndex+2).coerceIn(0,routePoints.lastIndex)
+                val target=routePoints[nextIndex]
+                ArDirectionMath.cue(here,target,heading,"Próximo ponto da rota")
+            }
         }
     }
 
