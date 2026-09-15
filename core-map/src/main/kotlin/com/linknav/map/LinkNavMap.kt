@@ -360,14 +360,21 @@ fun LinkNavMap(
                     FeatureCollection.fromFeatures(features)
                 )
 
-                val selectedFeature=selectedPlace?.let { poi ->
-                    Feature.fromGeometry(
-                        Point.fromLngLat(poi.point.longitude,poi.point.latitude)
+                val selectedSource=style.getSourceAs<GeoJsonSource>(SELECTED_SOURCE)
+                if(selectedPlace!=null) {
+                    selectedSource?.setGeoJson(
+                        Feature.fromGeometry(
+                            Point.fromLngLat(
+                                selectedPlace.point.longitude,
+                                selectedPlace.point.latitude
+                            )
+                        )
+                    )
+                } else {
+                    selectedSource?.setGeoJson(
+                        FeatureCollection.fromFeatures(emptyList<Feature>())
                     )
                 }
-                style.getSourceAs<GeoJsonSource>(SELECTED_SOURCE)?.setGeoJson(
-                    selectedFeature ?: FeatureCollection.fromFeatures(emptyList<Feature>())
-                )
             }
         }
     )
