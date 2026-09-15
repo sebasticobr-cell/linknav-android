@@ -254,6 +254,130 @@ class BackendSearchProvider(private val baseUrl:String):SearchProvider {
         return prev[b.length]
     }
 
+
+    suspend fun viewportPlaces(
+        north:Double,
+        south:Double,
+        east:Double,
+        west:Double,
+        zoom:Double,
+        limit:Int=420
+    ):List<PlaceResult> = runCatching {
+        val selectors = when {
+            zoom < 10.0 -> listOf(
+                """nwr($south,$west,$north,$east)["aeroway"~"aerodrome|terminal"]["name"];""",
+                """nwr($south,$west,$north,$east)["tourism"~"attraction|museum"]["name"];""",
+                """nwr($south,$west,$north,$east)["amenity"~"hospital|university"]["name"];"""
+            )
+            zoom < 13.0 -> listOf(
+                """nwr($south,$west,$north,$east)["amenity"~"hospital|university|school|fuel|bus_station"]["name"];""",
+                """nwr($south,$west,$north,$east)["tourism"~"hotel|attraction|museum"]["name"];""",
+                """nwr($south,$west,$north,$east)["leisure"~"park|stadium"]["name"];""",
+                """nwr($south,$west,$north,$east)["shop"~"supermarket|mall"]["name"];"""
+            )
+            zoom < 15.0 -> listOf(
+                """nwr($south,$west,$north,$east)["amenity"]["name"];""",
+                """nwr($south,$west,$north,$east)["shop"~"supermarket|mall|department_store|convenience"]["name"];""",
+                """nwr($south,$west,$north,$east)["tourism"]["name"];""",
+                """nwr($south,$west,$north,$east)["leisure"]["name"];"""
+            )
+            else -> listOf(
+                """nwr($south,$west,$north,$east)["amenity"]["name"];""",
+                """nwr($south,$west,$north,$east)["shop"]["name"];""",
+                """nwr($south,$west,$north,$east)["tourism"]["name"];""",
+                """nwr($south,$west,$north,$east)["office"]["name"];""",
+                """nwr($south,$west,$north,$east)["leisure"]["name"];""",
+                """nwr($south,$west,$north,$east)["craft"]["name"];""",
+                """nwr($south,$west,$north,$east)["historic"]["name"];""",
+                """nwr($south,$west,$north,$east)["public_transport"]["name"];"""
+            )
+        }.map { it.replace("$south",south.toString())
+                  .replace("$west",west.toString())
+                  .replace("$north",north.toString())
+                  .replace("$east",east.toString()) }
+
+        val query = buildString {
+            append("[out:json][timeout:12];(")
+            selectors.forEach { append(it) }
+            append(");out center ")
+            append(limit)
+            append(";")
+        }
+
+        val url="https://overpass-api.de/api/interpreter?data="+
+            URLEncoder.encode(query,"UTF-8")
+        val root=JSONObject(read(url))
+        val elements=root.optJSONArray("elements") ?: return@runCatching emptyList()
+        val out=mutableListOf<PlaceResult>()
+
+        for(i in 0 until elements.length()){
+            val e=elements.getJSONObject(i)
+            val tags=e.optJSONObject("tags") ?: continue
+            val name=tags.optString("name")
+            if(name.isBlank()) continue
+
+            val lat:Double
+            val lon:Double
+            if(e.has("lat") && e.has("lon")){
+                lat=e.getDouble("lat")
+                lon=e.getDouble("lon")
+            }else{
+                val center=e.optJSONObject("center") ?: continue
+                lat=center.optDouble("lat",Double.NaN)
+                lon=center.optDouble("lon",Double.NaN)
+                if(!lat.isFinite() || !lon.isFinite()) continue
+            }
+
+            val address=listOf(
+                tags.optString("addr:street"),
+                tags.optString("addr:housenumber"),
+                tags.optString("addr:suburb"),
+                tags.optString("addr:city")
+            ).filter { it.isNotBlank() }.distinct().joinToString(" • ")
+
+            val category=listOf(
+                tags.optString("amenity"),
+                tags.optString("shop"),
+                tags.optString("tourism"),
+                tags.optString("office"),
+                tags.optString("leisure"),
+                tags.optString("craft"),
+                tags.optString("historic"),
+                tags.optString("public_transport")
+            ).firstOrNull { it.isNotBlank() }
+
+            out += PlaceResult(
+                id="osm-${e.optString("type")}-${e.optLong("id")}",
+                name=name,
+                address=address,
+                location=GeoPoint(lat,lon),
+                category=category
+            )
+        }
+
+        out.distinctBy { it.id }
+            .sortedByDescending { viewportImportance(it,zoom) }
+            .take(limit)
+    }.getOrDefault(emptyList())
+
+    private fun viewportImportance(place:PlaceResult,zoom:Double):Double {
+        val category=place.category.orEmpty()
+        val base=when(category) {
+            "hospital" -> 100.0
+            "university","school" -> 82.0
+            "supermarket","mall" -> 78.0
+            "fuel" -> 76.0
+            "hotel" -> 70.0
+            "park","stadium" -> 68.0
+            "bank" -> 66.0
+            "pharmacy" -> 65.0
+            "restaurant","cafe","fast_food" -> 58.0
+            "place_of_worship" -> 55.0
+            else -> 42.0
+        }
+        return base + zoom
+    }
+
     private fun featureToPlace(f:JSONObject,index:Int):PlaceResult{
         val props=f.optJSONObject("properties") ?: JSONObject()
         val coords=f.getJSONObject("geometry").getJSONArray("coordinates")
