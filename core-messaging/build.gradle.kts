@@ -11,6 +11,12 @@ android {
 }
 
 
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+
 dependencies { implementation(project(":core-network")); implementation(project(":core-security")) }
 
 dependencies { implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0") }

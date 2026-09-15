@@ -11,6 +11,12 @@ android {
 }
 
 
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+
 dependencies { implementation("androidx.work:work-runtime-ktx:2.11.2"); implementation("androidx.room:room-runtime:2.8.5"); implementation("androidx.room:room-ktx:2.8.5") }
 
 dependencies { implementation("org.maplibre.gl:android-sdk:13.6.1") }

@@ -11,6 +11,12 @@ android {
 }
 
 
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+
 dependencies { implementation("io.ktor:ktor-client-core:3.5.1"); implementation("io.ktor:ktor-client-okhttp:3.5.1"); implementation("io.ktor:ktor-client-websockets:3.5.1"); implementation("io.ktor:ktor-client-content-negotiation:3.5.1"); implementation("io.ktor:ktor-serialization-kotlinx-json:3.5.1") }
 
 dependencies { implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0") }
