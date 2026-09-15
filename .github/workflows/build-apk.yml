@@ -1,0 +1,56 @@
+name: Build LINKNAV APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - '**/*.kt'
+      - '**/*.kts'
+      - 'gradle.properties'
+      - 'settings.gradle.kts'
+      - '.github/workflows/build-apk.yml'
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    container:
+      image: saschpe/android-sdk:37.2-jdk17.0.20_8
+      options: --user 0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile against Android API 37
+        run: |
+          find . -name build.gradle.kts -type f -exec sed -i 's/compileSdk = 35/compileSdk = 37/g' {} +
+          grep -R "compileSdk =" -n app core-* feature-* | head -80
+
+      - name: Install Gradle 9.6.1
+        run: |
+          curl -fL --retry 3 -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-9.6.1-bin.zip
+          unzip -q /tmp/gradle.zip -d /opt
+          /opt/gradle-9.6.1/bin/gradle --version
+
+      - name: Build APK
+        run: |
+          /opt/gradle-9.6.1/bin/gradle --no-daemon --stacktrace :app:assembleDebug -PLINKNAV_BASE_URL=https://api.linknav.invalid
+
+      - name: Verify APK
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          test -s "$APK"
+          apksigner verify --verbose "$APK"
+          sha256sum "$APK" | tee LINKNAV-debug.apk.sha256
+          cp "$APK" LINKNAV-debug.apk
+          ls -lh LINKNAV-debug.apk LINKNAV-debug.apk.sha256
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LINKNAV-debug-apk
+          path: |
+            LINKNAV-debug.apk
+            LINKNAV-debug.apk.sha256
+          if-no-files-found: error
+          retention-days: 7
