@@ -21,10 +21,14 @@ class DuoRealtimeClient {
                 try {
                     client.webSocket(urlString="$wsUrl/realtime/duo/$sessionId?token=$token") {
                         val sender=launch {
-                            for(text in outgoing) send(Frame.Text(text))
+                            while (isActive) {
+                                val text = outgoing.receiveCatching().getOrNull() ?: break
+                                send(Frame.Text(text))
+                            }
                         }
                         try {
-                            for(frame in incoming){
+                            while (isActive) {
+                                val frame = incoming.receiveCatching().getOrNull() ?: break
                                 if(frame is Frame.Text){
                                     val o=JSONObject(frame.readText())
                                     trySend(RealtimeEvent(
@@ -47,8 +51,6 @@ class DuoRealtimeClient {
     }
 
     suspend fun send(wsUrl:String,sessionId:String,token:String,type:String,payloadJson:String){
-        // Parameters stay in the API so callers cannot accidentally send an event without session context.
-        // The active connection owns the authenticated URL; queued messages survive short reconnects.
         require(wsUrl.isNotBlank() && sessionId.isNotBlank() && token.isNotBlank())
         val payload=runCatching { JSONObject(payloadJson) }.getOrElse { JSONObject().put("value",payloadJson) }
         outgoing.send(JSONObject().put("type",type).put("payload",payload).toString())
