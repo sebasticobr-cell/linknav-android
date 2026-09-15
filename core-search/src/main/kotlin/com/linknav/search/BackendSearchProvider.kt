@@ -4,6 +4,7 @@ import com.linknav.location.GeoPoint
 import java.net.HttpURLConnection
 import java.net.URLEncoder
 import java.net.URL
+import java.text.Normalizer
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -31,7 +32,7 @@ class BackendSearchProvider(private val baseUrl:String):SearchProvider {
     }
 
     suspend fun reverse(point:GeoPoint):PlaceResult? = runCatching {
-        val url="https://photon.komoot.io/reverse?lon=${point.longitude}&lat=${point.latitude}&lang=pt"
+        val url="https://photon.komoot.io/reverse?lon=${point.longitude}&lat=${point.latitude}"
         val root=JSONObject(read(url))
         root.optJSONArray("features")?.let { features ->
             if(features.length()==0) null else featureToPlace(features.getJSONObject(0),0)
@@ -56,8 +57,8 @@ class BackendSearchProvider(private val baseUrl:String):SearchProvider {
 
     private fun photonRequest(query:String,near:GeoPoint?,limit:Int):List<PlaceResult>{
         val q=URLEncoder.encode(query,"UTF-8")
-        val bias=near?.let{"&lat=${it.latitude}&lon=${it.longitude}&location_bias_scale=0.22"}.orEmpty()
-        val root=JSONObject(read("https://photon.komoot.io/api/?q=$q&limit=$limit&lang=pt$bias"))
+        val bias=near?.let{"&lat=${it.latitude}&lon=${it.longitude}&zoom=15&location_bias_scale=0.12"}.orEmpty()
+        val root=JSONObject(read("https://photon.komoot.io/api/?q=$q&limit=$limit$bias"))
         val features=root.optJSONArray("features") ?: return emptyList()
         return List(features.length()){ i -> featureToPlace(features.getJSONObject(i),i) }
     }
@@ -124,6 +125,133 @@ class BackendSearchProvider(private val baseUrl:String):SearchProvider {
             )
         }
         return out.take(limit)
+    }
+
+
+    suspend fun nearbyIndex(near:GeoPoint,radiusM:Int=5000,limit:Int=320):List<PlaceResult> = runCatching {
+        val overpass = """
+            [out:json][timeout:12];
+            (
+              nwr(around:$radiusM,${near.latitude},${near.longitude})["name"]["amenity"];
+              nwr(around:$radiusM,${near.latitude},${near.longitude})["name"]["shop"];
+              nwr(around:$radiusM,${near.latitude},${near.longitude})["name"]["tourism"];
+              nwr(around:$radiusM,${near.latitude},${near.longitude})["name"]["office"];
+              nwr(around:$radiusM,${near.latitude},${near.longitude})["name"]["leisure"];
+              nwr(around:$radiusM,${near.latitude},${near.longitude})["name"]["craft"];
+              nwr(around:1600,${near.latitude},${near.longitude})["addr:housenumber"];
+            );
+            out center $limit;
+        """.trimIndent().replace("$","$")
+
+        val url="https://overpass-api.de/api/interpreter?data="+URLEncoder.encode(overpass,"UTF-8")
+        val root=JSONObject(read(url))
+        val elements=root.optJSONArray("elements") ?: return@runCatching emptyList()
+        val out=mutableListOf<PlaceResult>()
+
+        for(i in 0 until elements.length()){
+            val e=elements.getJSONObject(i)
+            val tags=e.optJSONObject("tags") ?: continue
+            val name=tags.optString("name").ifBlank { tags.optString("addr:housenumber") }
+            if(name.isBlank()) continue
+
+            val lat:Double
+            val lon:Double
+            if(e.has("lat") && e.has("lon")){
+                lat=e.getDouble("lat")
+                lon=e.getDouble("lon")
+            }else{
+                val center=e.optJSONObject("center") ?: continue
+                lat=center.optDouble("lat",Double.NaN)
+                lon=center.optDouble("lon",Double.NaN)
+                if(!lat.isFinite() || !lon.isFinite()) continue
+            }
+
+            val address=listOf(
+                tags.optString("addr:street"),
+                tags.optString("addr:housenumber"),
+                tags.optString("addr:suburb"),
+                tags.optString("addr:city")
+            ).filter { it.isNotBlank() }.distinct().joinToString(" • ")
+
+            val category=listOf(
+                tags.optString("amenity"),
+                tags.optString("shop"),
+                tags.optString("tourism"),
+                tags.optString("office"),
+                tags.optString("leisure"),
+                tags.optString("craft")
+            ).firstOrNull { it.isNotBlank() }
+                ?: if(tags.optString("addr:housenumber").isNotBlank()) "address" else null
+
+            out += PlaceResult(
+                id="osm-${e.optString("type")}-${e.optLong("id")}".replace("$","$"),
+                name=name,
+                address=address,
+                location=GeoPoint(lat,lon),
+                category=category
+            )
+        }
+        out.distinctBy { it.id }.take(limit)
+    }.getOrDefault(emptyList())
+
+    fun localSuggestions(query:String,local:List<PlaceResult>,limit:Int=15):List<PlaceResult>{
+        val q=normalize(query)
+        if(q.isBlank()) return emptyList()
+
+        return local.mapNotNull { place ->
+            val n=normalize(place.name)
+            val a=normalize(place.address)
+            val score=when{
+                n.startsWith(q) -> 0
+                n.contains(q) -> 1
+                a.startsWith(q) -> 2
+                a.contains(q) -> 3
+                fuzzyWords(n,q) -> 4
+                else -> null
+            }
+            score?.let { it to place }
+        }.sortedWith(
+            compareBy<Pair<Int,PlaceResult>> { it.first }
+                .thenBy { it.second.name.length }
+        ).map { it.second }
+            .distinctBy { it.id }
+            .take(limit)
+    }
+
+    private fun normalize(value:String):String =
+        Normalizer.normalize(value.lowercase(),Normalizer.Form.NFD)
+            .replace(Regex("\\p{Mn}+"),"")
+            .trim()
+
+    private fun fuzzyWords(text:String,q:String):Boolean{
+        if(q.length<3) return false
+        val tolerance=when{
+            q.length<=4 -> 1
+            q.length<=7 -> 2
+            else -> 3
+        }
+        return text.split(' ','-','/').any { token ->
+            token.isNotBlank() && levenshtein(token.take(q.length+2),q) <= tolerance
+        }
+    }
+
+    private fun levenshtein(a:String,b:String):Int{
+        if(a==b) return 0
+        if(a.isEmpty()) return b.length
+        if(b.isEmpty()) return a.length
+        var prev=IntArray(b.length+1){it}
+        var curr=IntArray(b.length+1)
+        for(i in a.indices){
+            curr[0]=i+1
+            for(j in b.indices){
+                val cost=if(a[i]==b[j]) 0 else 1
+                curr[j+1]=minOf(curr[j]+1,prev[j+1]+1,prev[j]+cost)
+            }
+            val t=prev
+            prev=curr
+            curr=t
+        }
+        return prev[b.length]
     }
 
     private fun featureToPlace(f:JSONObject,index:Int):PlaceResult{

@@ -17,6 +17,7 @@ import com.linknav.location.AndroidLocationEngine
 import com.linknav.location.GeoPoint
 import com.linknav.location.LocationState
 import com.linknav.map.LinkNavMap
+import com.linknav.map.MapPoi
 import com.linknav.routing.BackendRoutingProvider
 import com.linknav.routing.TravelMode
 import com.linknav.search.BackendSearchProvider
@@ -82,6 +83,8 @@ fun MapScreen(
 
     var query by remember{mutableStateOf("")}
     var results by remember{mutableStateOf<List<PlaceResult>>(emptyList())}
+    var nearbyIndex by remember{mutableStateOf<List<PlaceResult>>(emptyList())}
+    var indexCenter by remember{mutableStateOf<GeoPoint?>(null)}
     var recents by remember{mutableStateOf(loadRecents(ctx))}
     var route by remember{mutableStateOf<com.linknav.routing.Route?>(null)}
     var status by remember{mutableStateOf("")}
@@ -90,6 +93,12 @@ fun MapScreen(
 
     val mapPoint=loc.point?.let { p ->
         if(!heading.isNaN()) p.copy(bearingDeg=heading) else p
+    }
+
+    val mapPois=remember(nearbyIndex){
+        nearbyIndex.take(260).map {
+            MapPoi(it.id,it.name,it.category,it.location)
+        }
     }
 
     fun rememberPlace(place:PlaceResult){
@@ -102,9 +111,7 @@ fun MapScreen(
         if(q.isBlank()) return
         scope.launch {
             status="Pesquisando…"
-            val recentMatches=recents.filter {
-                it.name.contains(q,true) || it.address.contains(q,true)
-            }
+            val recentMatches=search.localSuggestions(q,nearbyIndex+recents,15)
             runCatching{withContext(Dispatchers.IO){search.search(q,loc.point,15)}}
                 .onSuccess{
                     results=(recentMatches+it).distinctBy{p->p.id}.take(15)
@@ -141,30 +148,45 @@ fun MapScreen(
         }
     }
 
-    LaunchedEffect(query){
+    LaunchedEffect(query,nearbyIndex){
         val q=query.trim()
         if(q.isBlank()){
             results=emptyList()
             status=""
             return@LaunchedEffect
         }
-        delay(if(q.length==1) 520 else 260)
 
-        val recentMatches=recents.filter {
-            it.name.contains(q,true) || it.address.contains(q,true)
-        }
+        val local=search.localSuggestions(q,nearbyIndex+recents,15)
+        results=local
+
+        delay(if(q.length==1) 340 else 220)
+
         val remote=runCatching{
             withContext(Dispatchers.IO){search.search(q,loc.point,15)}
         }.getOrDefault(emptyList())
 
-        results=(recentMatches+remote)
+        results=(local+remote)
             .distinctBy{it.id}
             .take(15)
     }
 
     LaunchedEffect(loc.point?.latitude,loc.point?.longitude){
         val p=loc.point ?: return@LaunchedEffect
-        delay(700)
+
+        val old=indexCenter
+        val refresh=old==null ||
+            kotlin.math.abs(old.latitude-p.latitude)>0.008 ||
+            kotlin.math.abs(old.longitude-p.longitude)>0.008
+
+        if(refresh){
+            indexCenter=p
+            val loaded=runCatching{
+                withContext(Dispatchers.IO){search.nearbyIndex(p)}
+            }.getOrDefault(emptyList())
+            if(loaded.isNotEmpty()) nearbyIndex=loaded
+        }
+
+        delay(550)
         runCatching{withContext(Dispatchers.IO){search.reverse(p)}}
             .onSuccess{place-> currentAddress=place?.address.orEmpty()}
     }
@@ -176,6 +198,7 @@ fun MapScreen(
             Modifier.fillMaxSize(),
             point=mapPoint,
             route=route?.points.orEmpty(),
+            places=mapPois,
             satellite=satellite
         )
 
@@ -245,7 +268,8 @@ fun MapScreen(
                 }
             }
 
-            if(results.isNotEmpty()){
+            if(query.isNotBlank() && results.isNotEmpty()){
+                Text("Sugestões",style=MaterialTheme.typography.titleSmall)
                 Surface(tonalElevation=10.dp,shape=MaterialTheme.shapes.large){
                     LazyColumn(Modifier.heightIn(max=380.dp)){
                         items(results){p->
