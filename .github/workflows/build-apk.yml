@@ -40,7 +40,7 @@ jobs:
         run: |
           APK=app/build/outputs/apk/debug/app-debug.apk
           test -s "$APK"
-          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n1)"
+          APKSIGNER="$(find /opt/android-sdk-linux/build-tools -type f -name apksigner | sort -V | tail -n1)"
           test -n "$APKSIGNER"
           test -x "$APKSIGNER"
           "$APKSIGNER" verify --verbose "$APK"
