@@ -1,10 +1,8 @@
 package com.linknav.map
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Path
+import android.Manifest
+import android.content.pm.PackageManager
+import android.location.Location
 import android.util.Log
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -20,8 +18,11 @@ import com.linknav.location.GeoPoint
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.location.LocationComponentActivationOptions
+import org.maplibre.android.location.modes.RenderMode
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
+import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.RasterLayer
@@ -30,62 +31,31 @@ import org.maplibre.android.style.layers.PropertyFactory.*
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.android.style.sources.RasterSource
 import org.maplibre.android.style.sources.TileSet
+import org.maplibre.geojson.Feature
+import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
 
 private const val ROUTE_SOURCE="linknav-route-source"
 private const val ROUTE_LAYER="linknav-route-layer"
-private const val USER_SOURCE="linknav-user-source"
-private const val USER_CIRCLE_LAYER="linknav-user-circle"
-private const val USER_ARROW_LAYER="linknav-user-arrow"
-private const val USER_ARROW_IMAGE="linknav-user-arrow-image"
+private const val POI_SOURCE="linknav-poi-source"
+private const val POI_DOT_LAYER="linknav-poi-dot-layer"
+private const val POI_LABEL_LAYER="linknav-poi-label-layer"
 private const val SAT_SOURCE="linknav-satellite-source"
 private const val SAT_LAYER="linknav-satellite-layer"
-
-private fun locationArrowBitmap(): Bitmap {
-    val size = 128
-    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-    val canvas = Canvas(bitmap)
-    val shadow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(90, 0, 0, 0)
-        style = Paint.Style.FILL
-    }
-    val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.rgb(25, 118, 210)
-        style = Paint.Style.FILL
-    }
-    val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
-        style = Paint.Style.STROKE
-        strokeWidth = 7f
-        strokeJoin = Paint.Join.ROUND
-    }
-    val path = Path().apply {
-        moveTo(64f, 10f)
-        lineTo(106f, 108f)
-        lineTo(64f, 87f)
-        lineTo(22f, 108f)
-        close()
-    }
-    canvas.save()
-    canvas.translate(2f, 4f)
-    canvas.drawPath(path, shadow)
-    canvas.restore()
-    canvas.drawPath(path, fill)
-    canvas.drawPath(path, stroke)
-    return bitmap
-}
 
 @Composable
 fun LinkNavMap(
     modifier: Modifier = Modifier,
     point: GeoPoint? = null,
     route: List<GeoPoint> = emptyList(),
+    places: List<MapPoi> = emptyList(),
     satellite: Boolean = false,
-    styleUri: String = "https://tiles.openfreemap.org/styles/bright"
+    styleUri: String = "https://tiles.openfreemap.org/styles/liberty"
 ) {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val context = LocalContext.current
+
     val mapLibreReady = remember(context) {
         runCatching {
             MapLibre.getInstance(context.applicationContext)
@@ -95,6 +65,7 @@ fun LinkNavMap(
             false
         }
     }
+
     if (!mapLibreReady) {
         Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text("Mapa temporariamente indisponível")
@@ -108,7 +79,7 @@ fun LinkNavMap(
 
     fun configureStyle(style: Style) {
         if (style.getSource(ROUTE_SOURCE) == null) style.addSource(GeoJsonSource(ROUTE_SOURCE))
-        if (style.getSource(USER_SOURCE) == null) style.addSource(GeoJsonSource(USER_SOURCE))
+        if (style.getSource(POI_SOURCE) == null) style.addSource(GeoJsonSource(POI_SOURCE))
 
         if (style.getSource(SAT_SOURCE) == null) {
             val tiles = TileSet(
@@ -117,40 +88,94 @@ fun LinkNavMap(
             )
             tiles.attribution = "Tiles © Esri — Source: Esri and the GIS User Community"
             tiles.setMinZoom(0f)
-            tiles.setMaxZoom(19f)
+            // Intencionalmente 17: acima disso o MapLibre sobre-amplia o último
+            // tile válido em vez de solicitar níveis que retornam 'Map data not yet available'.
+            tiles.setMaxZoom(17f)
+
             style.addSource(RasterSource(SAT_SOURCE, tiles, 256))
+
             val raster = RasterLayer(SAT_LAYER, SAT_SOURCE).withProperties(
                 rasterOpacity(if (satellite) 1f else 0f)
             )
             val firstLabel = style.layers.firstOrNull { it is SymbolLayer }?.id
-            if (firstLabel != null) style.addLayerBelow(raster, firstLabel) else style.addLayerAt(raster, 0)
+            if (firstLabel != null) style.addLayerBelow(raster, firstLabel)
+            else style.addLayerAt(raster, 0)
         }
-
-        runCatching { style.addImage(USER_ARROW_IMAGE, locationArrowBitmap()) }
 
         if (style.getLayer(ROUTE_LAYER) == null) {
-            style.addLayer(LineLayer(ROUTE_LAYER, ROUTE_SOURCE).withProperties(
-                lineWidth(7f), lineOpacity(.92f), lineColor("#2962FF")
-            ))
+            style.addLayer(
+                LineLayer(ROUTE_LAYER, ROUTE_SOURCE).withProperties(
+                    lineWidth(7f),
+                    lineOpacity(.94f),
+                    lineColor("#2962FF")
+                )
+            )
         }
-        if (style.getLayer(USER_CIRCLE_LAYER) == null) {
-            style.addLayer(CircleLayer(USER_CIRCLE_LAYER, USER_SOURCE).withProperties(
-                circleRadius(14f),
-                circleColor("#1976D2"),
-                circleOpacity(.22f),
-                circleStrokeColor("#1976D2"),
-                circleStrokeWidth(2f)
-            ))
+
+        if (style.getLayer(POI_DOT_LAYER) == null) {
+            style.addLayer(
+                CircleLayer(POI_DOT_LAYER, POI_SOURCE).withProperties(
+                    circleRadius(4.5f),
+                    circleColor("#1976D2"),
+                    circleStrokeColor("#FFFFFF"),
+                    circleStrokeWidth(1.5f)
+                )
+            )
         }
-        if (style.getLayer(USER_ARROW_LAYER) == null) {
-            style.addLayer(SymbolLayer(USER_ARROW_LAYER, USER_SOURCE).withProperties(
-                iconImage(USER_ARROW_IMAGE),
-                iconSize(.66f),
-                iconAllowOverlap(true),
-                iconIgnorePlacement(true)
-            ))
+
+        if (style.getLayer(POI_LABEL_LAYER) == null) {
+            style.addLayer(
+                SymbolLayer(POI_LABEL_LAYER, POI_SOURCE).withProperties(
+                    textField(Expression.get("name")),
+                    textSize(12f),
+                    textColor("#263238"),
+                    textHaloColor("#FFFFFF"),
+                    textHaloWidth(1.5f),
+                    textOffset(arrayOf(0f, 1.1f)),
+                    textAllowOverlap(false),
+                    textIgnorePlacement(false)
+                )
+            )
         }
+
         styleReady = true
+    }
+
+    fun ensureLocation(map: org.maplibre.android.maps.MapLibreMap, style: Style, p:GeoPoint) {
+        val fine = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val coarse = context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if(!fine && !coarse) return
+
+        val component = map.locationComponent
+        if(!component.isLocationComponentActivated) {
+            runCatching {
+                component.activateLocationComponent(
+                    LocationComponentActivationOptions.builder(context, style)
+                        .useDefaultLocationEngine(false)
+                        .build()
+                )
+                component.isLocationComponentEnabled = true
+                component.renderMode = RenderMode.GPS
+            }.onFailure {
+                Log.e("LINKNAV","LocationComponent activation failed",it)
+            }
+        }
+
+        if(component.isLocationComponentActivated) {
+            val l=Location("linknav").apply {
+                latitude=p.latitude
+                longitude=p.longitude
+                accuracy=p.accuracyM.coerceAtLeast(1f)
+                bearing=p.bearingDeg
+                speed=p.speedMps
+                time=p.timestampMs.takeIf{it>0L} ?: System.currentTimeMillis()
+            }
+            runCatching {
+                component.forceLocationUpdate(l)
+                if(!component.isLocationComponentEnabled) component.isLocationComponentEnabled=true
+                component.renderMode=RenderMode.GPS
+            }
+        }
     }
 
     DisposableEffect(lifecycle) {
@@ -167,53 +192,70 @@ fun LinkNavMap(
             }
         }
         lifecycle.addObserver(observer)
-        onDispose { lifecycle.removeObserver(observer); mapView?.onDestroy() }
+        onDispose {
+            lifecycle.removeObserver(observer)
+            mapView?.onDestroy()
+        }
     }
 
     AndroidView(
         modifier = modifier,
         factory = { ctx ->
             MapView(ctx).also { v ->
-                mapView = v
+                mapView=v
                 v.onCreate(null)
                 v.getMapAsync { map ->
-                    map.uiSettings.isCompassEnabled = true
-                    map.uiSettings.isAttributionEnabled = true
+                    map.uiSettings.isCompassEnabled=true
+                    map.uiSettings.isAttributionEnabled=true
                     map.setMaxZoomPreference(22.0)
-                    map.setStyle(Style.Builder().fromUri(styleUri)) { style -> configureStyle(style) }
+                    map.setStyle(Style.Builder().fromUri(styleUri)) { style ->
+                        configureStyle(style)
+                    }
                 }
             }
         },
         update = { v ->
             v.getMapAsync { map ->
-                val style = map.style ?: return@getMapAsync
-                if (!styleReady) return@getMapAsync
+                val style=map.style ?: return@getMapAsync
+                if(!styleReady) return@getMapAsync
 
                 style.getLayerAs<RasterLayer>(SAT_LAYER)?.setProperties(
-                    rasterOpacity(if (satellite) 1f else 0f)
+                    rasterOpacity(if(satellite) 1f else 0f)
                 )
 
                 point?.let { p ->
-                    style.getSourceAs<GeoJsonSource>(USER_SOURCE)?.setGeoJson(
-                        Point.fromLngLat(p.longitude, p.latitude)
-                    )
-                    style.getLayerAs<SymbolLayer>(USER_ARROW_LAYER)?.setProperties(
-                        iconRotate(p.bearingDeg)
-                    )
-                    if (firstFix) {
-                        firstFix = false
+                    ensureLocation(map,style,p)
+                    if(firstFix) {
+                        firstFix=false
                         map.animateCamera(
-                            CameraUpdateFactory.newLatLngZoom(LatLng(p.latitude, p.longitude), 17.0),
+                            CameraUpdateFactory.newLatLngZoom(
+                                LatLng(p.latitude,p.longitude),
+                                17.2
+                            ),
                             650
                         )
                     }
                 }
 
-                if (route.size >= 2) {
+                if(route.size>=2) {
                     style.getSourceAs<GeoJsonSource>(ROUTE_SOURCE)?.setGeoJson(
-                        LineString.fromLngLats(route.map { Point.fromLngLat(it.longitude, it.latitude) })
+                        LineString.fromLngLats(
+                            route.map { Point.fromLngLat(it.longitude,it.latitude) }
+                        )
                     )
                 }
+
+                val features=places.map { poi ->
+                    Feature.fromGeometry(
+                        Point.fromLngLat(poi.point.longitude,poi.point.latitude)
+                    ).also { f ->
+                        f.addStringProperty("name",poi.name)
+                        f.addStringProperty("category",poi.category ?: "")
+                    }
+                }
+                style.getSourceAs<GeoJsonSource>(POI_SOURCE)?.setGeoJson(
+                    FeatureCollection.fromFeatures(features)
+                )
             }
         }
     )
