@@ -1,5 +1,10 @@
 package com.linknav.map
 
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
 import android.util.Log
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -33,8 +38,43 @@ private const val ROUTE_LAYER="linknav-route-layer"
 private const val USER_SOURCE="linknav-user-source"
 private const val USER_CIRCLE_LAYER="linknav-user-circle"
 private const val USER_ARROW_LAYER="linknav-user-arrow"
+private const val USER_ARROW_IMAGE="linknav-user-arrow-image"
 private const val SAT_SOURCE="linknav-satellite-source"
 private const val SAT_LAYER="linknav-satellite-layer"
+
+private fun locationArrowBitmap(): Bitmap {
+    val size = 128
+    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    val shadow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(90, 0, 0, 0)
+        style = Paint.Style.FILL
+    }
+    val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.rgb(25, 118, 210)
+        style = Paint.Style.FILL
+    }
+    val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        style = Paint.Style.STROKE
+        strokeWidth = 7f
+        strokeJoin = Paint.Join.ROUND
+    }
+    val path = Path().apply {
+        moveTo(64f, 10f)
+        lineTo(106f, 108f)
+        lineTo(64f, 87f)
+        lineTo(22f, 108f)
+        close()
+    }
+    canvas.save()
+    canvas.translate(2f, 4f)
+    canvas.drawPath(path, shadow)
+    canvas.restore()
+    canvas.drawPath(path, fill)
+    canvas.drawPath(path, stroke)
+    return bitmap
+}
 
 @Composable
 fun LinkNavMap(
@@ -71,13 +111,22 @@ fun LinkNavMap(
         if (style.getSource(USER_SOURCE) == null) style.addSource(GeoJsonSource(USER_SOURCE))
 
         if (style.getSource(SAT_SOURCE) == null) {
-            val tiles = TileSet("2.2.0", "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}")
+            val tiles = TileSet(
+                "2.2.0",
+                "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+            )
             tiles.attribution = "Tiles © Esri — Source: Esri and the GIS User Community"
+            tiles.setMinZoom(0f)
+            tiles.setMaxZoom(19f)
             style.addSource(RasterSource(SAT_SOURCE, tiles, 256))
-            val raster = RasterLayer(SAT_LAYER, SAT_SOURCE).withProperties(rasterOpacity(if (satellite) 1f else 0f))
+            val raster = RasterLayer(SAT_LAYER, SAT_SOURCE).withProperties(
+                rasterOpacity(if (satellite) 1f else 0f)
+            )
             val firstLabel = style.layers.firstOrNull { it is SymbolLayer }?.id
             if (firstLabel != null) style.addLayerBelow(raster, firstLabel) else style.addLayerAt(raster, 0)
         }
+
+        runCatching { style.addImage(USER_ARROW_IMAGE, locationArrowBitmap()) }
 
         if (style.getLayer(ROUTE_LAYER) == null) {
             style.addLayer(LineLayer(ROUTE_LAYER, ROUTE_SOURCE).withProperties(
@@ -86,19 +135,19 @@ fun LinkNavMap(
         }
         if (style.getLayer(USER_CIRCLE_LAYER) == null) {
             style.addLayer(CircleLayer(USER_CIRCLE_LAYER, USER_SOURCE).withProperties(
-                circleRadius(11f),
+                circleRadius(14f),
                 circleColor("#1976D2"),
-                circleStrokeColor("#FFFFFF"),
-                circleStrokeWidth(3f)
+                circleOpacity(.22f),
+                circleStrokeColor("#1976D2"),
+                circleStrokeWidth(2f)
             ))
         }
         if (style.getLayer(USER_ARROW_LAYER) == null) {
             style.addLayer(SymbolLayer(USER_ARROW_LAYER, USER_SOURCE).withProperties(
-                textField("▲"),
-                textSize(19f),
-                textColor("#FFFFFF"),
-                textAllowOverlap(true),
-                textIgnorePlacement(true)
+                iconImage(USER_ARROW_IMAGE),
+                iconSize(.66f),
+                iconAllowOverlap(true),
+                iconIgnorePlacement(true)
             ))
         }
         styleReady = true
@@ -130,6 +179,7 @@ fun LinkNavMap(
                 v.getMapAsync { map ->
                     map.uiSettings.isCompassEnabled = true
                     map.uiSettings.isAttributionEnabled = true
+                    map.setMaxZoomPreference(22.0)
                     map.setStyle(Style.Builder().fromUri(styleUri)) { style -> configureStyle(style) }
                 }
             }
@@ -139,15 +189,21 @@ fun LinkNavMap(
                 val style = map.style ?: return@getMapAsync
                 if (!styleReady) return@getMapAsync
 
-                style.getLayerAs<RasterLayer>(SAT_LAYER)?.setProperties(rasterOpacity(if (satellite) 1f else 0f))
+                style.getLayerAs<RasterLayer>(SAT_LAYER)?.setProperties(
+                    rasterOpacity(if (satellite) 1f else 0f)
+                )
 
                 point?.let { p ->
-                    style.getSourceAs<GeoJsonSource>(USER_SOURCE)?.setGeoJson(Point.fromLngLat(p.longitude, p.latitude))
-                    style.getLayerAs<SymbolLayer>(USER_ARROW_LAYER)?.setProperties(textRotate(p.bearingDeg))
+                    style.getSourceAs<GeoJsonSource>(USER_SOURCE)?.setGeoJson(
+                        Point.fromLngLat(p.longitude, p.latitude)
+                    )
+                    style.getLayerAs<SymbolLayer>(USER_ARROW_LAYER)?.setProperties(
+                        iconRotate(p.bearingDeg)
+                    )
                     if (firstFix) {
                         firstFix = false
                         map.animateCamera(
-                            CameraUpdateFactory.newLatLngZoom(LatLng(p.latitude, p.longitude), 16.5),
+                            CameraUpdateFactory.newLatLngZoom(LatLng(p.latitude, p.longitude), 17.0),
                             650
                         )
                     }

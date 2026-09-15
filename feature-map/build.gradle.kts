@@ -22,12 +22,10 @@ dependencies {
     implementation(platform("androidx.compose:compose-bom:2026.08.00"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
+    implementation(project(":core-map"))
+    implementation(project(":core-location"))
+    implementation(project(":core-search"))
+    implementation(project(":core-routing"))
+    implementation(project(":core-ar"))
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
 }
-
-dependencies { implementation(project(":core-map")); implementation(project(":core-location")) }
-
-dependencies { implementation(project(":core-search")) }
-
-dependencies { implementation(project(":core-routing")) }
-
-dependencies { implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0") }
