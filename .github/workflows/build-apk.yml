@@ -40,7 +40,10 @@ jobs:
         run: |
           APK=app/build/outputs/apk/debug/app-debug.apk
           test -s "$APK"
-          apksigner verify --verbose "$APK"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n1)"
+          test -n "$APKSIGNER"
+          test -x "$APKSIGNER"
+          "$APKSIGNER" verify --verbose "$APK"
           sha256sum "$APK" | tee LINKNAV-debug.apk.sha256
           cp "$APK" LINKNAV-debug.apk
           ls -lh LINKNAV-debug.apk LINKNAV-debug.apk.sha256
