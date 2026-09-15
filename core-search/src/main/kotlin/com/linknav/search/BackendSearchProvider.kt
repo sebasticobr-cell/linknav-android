@@ -9,11 +9,25 @@ import org.json.JSONObject
 
 class BackendSearchProvider(private val baseUrl:String):SearchProvider {
     override suspend fun search(query:String,near:GeoPoint?,limit:Int):List<PlaceResult>{
-        if(query.isBlank()) return emptyList()
+        val clean=query.trim()
+        if(clean.isBlank()) return emptyList()
+
         if(!baseUrl.contains(".invalid")) {
-            runCatching { return searchBackend(query,near,limit) }
+            runCatching { return searchBackend(clean,near,limit) }
         }
-        return searchPhoton(query,near,limit)
+
+        val nearbyPrefix = if(near != null && clean.length <= 2) {
+            runCatching { nearbyPrefixPois(clean,near,8) }.getOrDefault(emptyList())
+        } else emptyList()
+
+        val nearResults = runCatching { photonRequest(clean,near,limit) }.getOrDefault(emptyList())
+        val broadResults = if(clean.length <= 3) {
+            runCatching { photonRequest(clean,null,(limit/2).coerceAtLeast(4)) }.getOrDefault(emptyList())
+        } else emptyList()
+
+        return (nearbyPrefix + nearResults + broadResults)
+            .distinctBy { "${it.id}:${it.location.latitude}:${it.location.longitude}" }
+            .take(limit)
     }
 
     suspend fun reverse(point:GeoPoint):PlaceResult? = runCatching {
@@ -40,12 +54,76 @@ class BackendSearchProvider(private val baseUrl:String):SearchProvider {
         }
     }
 
-    private fun searchPhoton(query:String,near:GeoPoint?,limit:Int):List<PlaceResult>{
+    private fun photonRequest(query:String,near:GeoPoint?,limit:Int):List<PlaceResult>{
         val q=URLEncoder.encode(query,"UTF-8")
-        val bias=near?.let{"&lat=${it.latitude}&lon=${it.longitude}&location_bias_scale=0.35"}.orEmpty()
+        val bias=near?.let{"&lat=${it.latitude}&lon=${it.longitude}&location_bias_scale=0.22"}.orEmpty()
         val root=JSONObject(read("https://photon.komoot.io/api/?q=$q&limit=$limit&lang=pt$bias"))
         val features=root.optJSONArray("features") ?: return emptyList()
         return List(features.length()){ i -> featureToPlace(features.getJSONObject(i),i) }
+    }
+
+    private fun nearbyPrefixPois(query:String,near:GeoPoint,limit:Int):List<PlaceResult>{
+        val safe=query
+            .filter { it.isLetterOrDigit() || it.isWhitespace() || it=='-' || it=='\'' || it=='.' }
+            .trim()
+            .replace("\"","")
+        if(safe.isBlank()) return emptyList()
+
+        val overpass = """
+            [out:json][timeout:6];
+            (
+              nwr(around:12000,${near.latitude},${near.longitude})["amenity"]["name"~"^$safe",i];
+              nwr(around:12000,${near.latitude},${near.longitude})["shop"]["name"~"^$safe",i];
+              nwr(around:12000,${near.latitude},${near.longitude})["tourism"]["name"~"^$safe",i];
+              nwr(around:12000,${near.latitude},${near.longitude})["office"]["name"~"^$safe",i];
+            );
+            out center $limit;
+        """.trimIndent()
+
+        val url="https://overpass-api.de/api/interpreter?data="+URLEncoder.encode(overpass,"UTF-8")
+        val root=JSONObject(read(url))
+        val elements=root.optJSONArray("elements") ?: return emptyList()
+        val out=mutableListOf<PlaceResult>()
+        for(i in 0 until elements.length()){
+            val e=elements.getJSONObject(i)
+            val tags=e.optJSONObject("tags") ?: continue
+            val name=tags.optString("name")
+            if(name.isBlank()) continue
+
+            val lat:Double
+            val lon:Double
+            if(e.has("lat") && e.has("lon")){
+                lat=e.getDouble("lat"); lon=e.getDouble("lon")
+            }else{
+                val center=e.optJSONObject("center") ?: continue
+                lat=center.optDouble("lat",Double.NaN)
+                lon=center.optDouble("lon",Double.NaN)
+                if(!lat.isFinite() || !lon.isFinite()) continue
+            }
+
+            val address=listOf(
+                tags.optString("addr:street"),
+                tags.optString("addr:housenumber"),
+                tags.optString("addr:suburb"),
+                tags.optString("addr:city")
+            ).filter { it.isNotBlank() }.joinToString(" • ")
+
+            val category=listOf(
+                tags.optString("amenity"),
+                tags.optString("shop"),
+                tags.optString("tourism"),
+                tags.optString("office")
+            ).firstOrNull { it.isNotBlank() }
+
+            out += PlaceResult(
+                id="osm-${e.optString("type")}-${e.optLong("id")}",
+                name=name,
+                address=address,
+                location=GeoPoint(lat,lon),
+                category=category
+            )
+        }
+        return out.take(limit)
     }
 
     private fun featureToPlace(f:JSONObject,index:Int):PlaceResult{
@@ -66,7 +144,13 @@ class BackendSearchProvider(private val baseUrl:String):SearchProvider {
         ).filter { it.isNotBlank() }.distinct()
         val id="${props.optString("osm_type")}-${props.optLong("osm_id",index.toLong())}"
         val category=props.optString("osm_value").ifBlank { props.optString("type") }.ifBlank { null }
-        return PlaceResult(id,name,parts.joinToString(" • "),GeoPoint(coords.getDouble(1),coords.getDouble(0)),category)
+        return PlaceResult(
+            id,
+            name,
+            parts.joinToString(" • "),
+            GeoPoint(coords.getDouble(1),coords.getDouble(0)),
+            category
+        )
     }
 
     private fun read(url:String):String{
@@ -75,7 +159,7 @@ class BackendSearchProvider(private val baseUrl:String):SearchProvider {
             connectTimeout=6500
             readTimeout=9000
             setRequestProperty("Accept-Language","pt-BR,pt;q=0.9")
-            setRequestProperty("User-Agent","LINKNAV/0.2 Android")
+            setRequestProperty("User-Agent","LINKNAV/0.3 Android")
         }
         if(c.responseCode !in 200..299) error("HTTP ${c.responseCode}")
         return c.inputStream.bufferedReader().use { it.readText() }
