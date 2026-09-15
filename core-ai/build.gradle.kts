@@ -10,13 +10,18 @@ android {
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
 }
 
-
 kotlin {
     compilerOptions {
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 
-dependencies { implementation(project(":core-routing")); implementation(project(":core-search")); implementation(project(":core-navigation")); implementation(project(":core-messaging")) }
+dependencies {
+    implementation(project(":core-routing"))
+    implementation(project(":core-search"))
+    implementation(project(":core-navigation"))
+    implementation(project(":core-messaging"))
+    implementation(project(":core-location"))
+}
 
 dependencies { implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0") }
