@@ -1,12 +1,15 @@
-FROM mingc/android-build-box:latest AS build
+FROM saschpe/android-sdk:37.2-jdk17.0.20_8 AS build
 WORKDIR /workspace
 COPY . .
 
-ENV ANDROID_HOME=/opt/android-sdk
-ENV ANDROID_SDK_ROOT=/opt/android-sdk
+# The source modules are kept targetSdk 35 for runtime compatibility;
+# compile against API 37 required by current AndroidX/Compose/CameraX.
+RUN find . -name build.gradle.kts -type f -exec sed -i 's/compileSdk = 35/compileSdk = 37/g' {} +
 
-RUN test -f /opt/android-sdk/platforms/android-35/android.jar
-RUN test -x /opt/android-sdk/build-tools/37.0.0/apksigner
+RUN java -version \
+    && echo "ANDROID_HOME=$ANDROID_HOME" \
+    && test -f "$ANDROID_HOME/platforms/android-37/android.jar" \
+    && which apksigner
 
 RUN curl -fL --retry 3 -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-9.6.1-bin.zip \
     && unzip -q /tmp/gradle.zip -d /opt \
@@ -17,7 +20,7 @@ RUN /opt/gradle-9.6.1/bin/gradle --no-daemon --stacktrace :app:assembleDebug -PL
 
 RUN mkdir -p /apk \
     && cp app/build/outputs/apk/debug/app-debug.apk /apk/LINKNAV-debug.apk \
-    && /opt/android-sdk/build-tools/37.0.0/apksigner verify --verbose /apk/LINKNAV-debug.apk \
+    && apksigner verify --verbose /apk/LINKNAV-debug.apk \
     && sha256sum /apk/LINKNAV-debug.apk > /apk/LINKNAV-debug.apk.sha256
 
 FROM python:3.12-slim
