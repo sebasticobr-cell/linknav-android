@@ -1,9 +1,8 @@
 FROM saschpe/android-sdk:37.2-jdk17.0.20_8 AS build
+USER root
 WORKDIR /workspace
 COPY . .
 
-# The source modules are kept targetSdk 35 for runtime compatibility;
-# compile against API 37 required by current AndroidX/Compose/CameraX.
 RUN find . -name build.gradle.kts -type f -exec sed -i 's/compileSdk = 35/compileSdk = 37/g' {} +
 
 RUN java -version \
