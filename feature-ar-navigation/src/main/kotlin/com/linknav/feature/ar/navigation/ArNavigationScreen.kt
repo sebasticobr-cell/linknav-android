@@ -4,8 +4,6 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -30,7 +28,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.linknav.camera.CameraIntrinsics
 import com.linknav.camera.CameraPreview
+import com.linknav.ar.RouteCameraProjection
+import com.linknav.ar.RouteWorldSample
 import com.linknav.location.GeoPoint
 import com.linknav.map.LinkNavMap
 import com.linknav.map.MapPoi
@@ -38,7 +39,7 @@ import com.linknav.navigation.NavigationPhase
 import com.linknav.navigation.NavigationSession
 import com.linknav.voice.NavigationVoice
 import java.util.Locale
-import kotlin.math.sin
+import kotlin.math.abs
 
 private val HudNavy=Color(0xE91A2034)
 private val HudBorder=Color(0xFF455270)
@@ -50,11 +51,6 @@ private const val REF_H=1536f
 private const val REF_STATUS=50f
 private const val REF_NAV=70f
 private const val REF_CONTENT_H=REF_H-REF_STATUS-REF_NAV
-
-private data class RouteProjectionSample(
-    val relativeBearing:Float,
-    val distanceM:Double
-)
 
 private fun navigationArrowPath(
     cx:Float,
@@ -85,108 +81,143 @@ private fun chevronPath(
 }
 
 @Composable
-private fun PerspectiveRouteOverlay(
+private fun WorldRouteOverlay(
     current:GeoPoint?,
-    routeSamples:List<RouteProjectionSample>,
-    relativeBearing:Float,
-    pitch:Float,
-    roll:Float,
+    routeSamples:List<RouteWorldSample>,
+    orientation:com.linknav.navigation.DeviceOrientation,
+    intrinsics:CameraIntrinsics,
+    confidence:Float,
     visible:Boolean
 ) {
-    if(!visible || current==null) return
-
-    val smoothRelative by animateFloatAsState(
-        targetValue=relativeBearing.coerceIn(-80f,80f),
-        animationSpec=spring(dampingRatio=.86f,stiffness=145f),
-        label="route-bearing"
-    )
+    if(
+        !visible ||
+        current==null ||
+        routeSamples.isEmpty() ||
+        orientation.headingDeg.isNaN()
+    ) return
 
     Canvas(Modifier.fillMaxSize()) {
-        val centerX=size.width*.50f
-        val horizonY=size.height*.33f + (-pitch/90f).coerceIn(-.20f,.20f)*size.height*.06f
-        val mainY=size.height*.505f
-        val groundSpan=(mainY-horizonY).coerceAtLeast(size.height*.12f)
-        val rollOffset=(roll/70f).coerceIn(-.25f,.25f)*size.width*.04f
+        val projected=RouteCameraProjection.project(
+            samples=routeSamples,
+            orientation=orientation,
+            intrinsics=intrinsics,
+            viewportWidth=size.width,
+            viewportHeight=size.height
+        )
+        if(projected.isEmpty()) return@Canvas
 
-        val samples=if(routeSamples.isNotEmpty()) routeSamples else
-            listOf(RouteProjectionSample(smoothRelative,22.0))
+        val alphaBase=(.46f+confidence.coerceIn(0f,1f)*.54f)
+            .coerceIn(.46f,1f)
 
-        val synthesized=MutableList(4) { i ->
-            samples.getOrElse(i) {
-                RouteProjectionSample(
-                    relativeBearing=samples.last().relativeBearing,
-                    distanceM=samples.last().distanceM+24.0*(i-samples.lastIndex)
-                )
-            }
+        val track=projected.filter {
+            it.depthM>.45f &&
+            it.screenX>-size.width*.15f &&
+            it.screenX<size.width*1.15f &&
+            it.screenY>-size.height*.15f &&
+            it.screenY<size.height*1.15f
         }
 
-        val depthSizes=listOf(.055f,.078f,.112f,.168f)
-        val depthFractions=listOf(.10f,.30f,.54f,.78f)
+        for(i in 0 until track.lastIndex) {
+            val a=track[i]
+            val b=track[i+1]
+            val stroke=(
+                minOf(a.pixelsPerMeter,b.pixelsPerMeter)*.18f
+            ).coerceIn(2f,size.width*.022f)
+            drawLine(
+                color=Color(0xFF3D74FF).copy(alpha=.17f*alphaBase),
+                start=Offset(a.screenX,a.screenY),
+                end=Offset(b.screenX,b.screenY),
+                strokeWidth=stroke
+            )
+        }
 
-        synthesized.indices.forEach { i ->
-            val sample=synthesized[(synthesized.lastIndex-i).coerceAtLeast(0)]
-            val rel=sample.relativeBearing.coerceIn(-75f,75f)
-            val angularShift=sin(Math.toRadians(rel.toDouble())).toFloat()
-            val depth=depthFractions[i]
-            val x=centerX +
-                angularShift*size.width*(.25f+.08f*depth) +
-                rollOffset*depth
-            val y=horizonY + groundSpan*depth
-            val w=size.width*depthSizes[i]
-            val h=w*.42f
-            val path=chevronPath(x,y,w,h)
+        for(i in projected.lastIndex downTo 1) {
+            val sample=projected[i]
+            if(!sample.visible) continue
+            val w=(sample.pixelsPerMeter*1.05f)
+                .coerceIn(size.width*.035f,size.width*.18f)
+            val h=w*.44f
+            val path=chevronPath(sample.screenX,sample.screenY,w,h)
 
-            rotate(
-                degrees=(rel*.30f-roll*.06f).coerceIn(-36f,36f),
-                pivot=Offset(x,y)
-            ) {
+            rotate(sample.rotationDeg,pivot=Offset(sample.screenX,sample.screenY)) {
+                drawPath(
+                    path=chevronPath(
+                        sample.screenX,
+                        sample.screenY,
+                        w*1.30f,
+                        h*1.30f
+                    ),
+                    color=Color(0xFF3F62FF).copy(alpha=.08f*alphaBase)
+                )
                 drawPath(
                     path=path,
                     brush=Brush.verticalGradient(
-                        listOf(
-                            Color(0xB36B78FF),
-                            Color(0xA23373FF)
+                        colors=listOf(
+                            Color(0xFF7378FF).copy(alpha=.70f*alphaBase),
+                            Color(0xFF326EFF).copy(alpha=.88f*alphaBase)
                         ),
-                        startY=y-h,
-                        endY=y+h
+                        startY=sample.screenY-h,
+                        endY=sample.screenY+h
                     )
                 )
             }
         }
 
-        val mainShift=
-            sin(Math.toRadians(smoothRelative.toDouble())).toFloat()*size.width*.065f
-        val mainX=centerX+mainShift+rollOffset*.28f
-        val mainW=size.width*.30f
-        val mainH=mainW*.96f
-        val rotation=(smoothRelative*.58f-roll*.08f).coerceIn(-52f,52f)
+        val main=projected.firstOrNull()
+        if(main!=null && main.visible) {
+            val mainW=(main.pixelsPerMeter*1.35f)
+                .coerceIn(size.width*.13f,size.width*.31f)
+            val mainH=mainW*.96f
+            val x=main.screenX
+            val y=main.screenY
 
-        rotate(rotation,pivot=Offset(mainX,mainY)) {
-            drawPath(
-                navigationArrowPath(mainX,mainY,mainW*1.34f,mainH*1.28f),
-                Color(0x123E86FF)
-            )
-            drawPath(
-                navigationArrowPath(mainX,mainY,mainW*1.18f,mainH*1.14f),
-                Color(0x25437EFF)
-            )
-            drawPath(
-                navigationArrowPath(mainX,mainY,mainW,mainH),
-                Brush.verticalGradient(
-                    colors=listOf(
-                        Color(0xFF148EFF),
-                        Color(0xFF216BFF),
-                        Color(0xFF4A4FF1)
-                    ),
-                    startY=mainY-mainH*.50f,
-                    endY=mainY+mainH*.42f
+            rotate(main.rotationDeg,pivot=Offset(x,y)) {
+                drawPath(
+                    navigationArrowPath(x,y,mainW*1.35f,mainH*1.30f),
+                    Color(0x103E86FF).copy(alpha=alphaBase)
                 )
-            )
-            drawCircle(
-                color=Color.White,
-                radius=mainW*.075f,
-                center=Offset(mainX,mainY+mainH*.14f)
-            )
+                drawPath(
+                    navigationArrowPath(x,y,mainW*1.18f,mainH*1.15f),
+                    Color(0x28437EFF).copy(alpha=alphaBase)
+                )
+                drawPath(
+                    navigationArrowPath(x,y,mainW,mainH),
+                    Brush.verticalGradient(
+                        colors=listOf(
+                            Color(0xFF148EFF).copy(alpha=alphaBase),
+                            Color(0xFF216BFF).copy(alpha=alphaBase),
+                            Color(0xFF4A4FF1).copy(alpha=alphaBase)
+                        ),
+                        startY=y-mainH*.50f,
+                        endY=y+mainH*.42f
+                    )
+                )
+                drawCircle(
+                    color=Color.White.copy(alpha=alphaBase),
+                    radius=mainW*.075f,
+                    center=Offset(x,y+mainH*.14f)
+                )
+            }
+        }
+
+        if(projected.none { it.visible }) {
+            val cue=projected.firstOrNull()
+            if(cue!=null) {
+                val right=cue.cameraX>=0f
+                val x=if(right) size.width*.91f else size.width*.09f
+                val y=size.height*.53f
+                val w=size.width*.075f
+                val h=w*.82f
+                rotate(
+                    degrees=if(right) 90f else -90f,
+                    pivot=Offset(x,y)
+                ) {
+                    drawPath(
+                        navigationArrowPath(x,y,w,h),
+                        Color(0xCC357BFF)
+                    )
+                }
+            }
         }
     }
 }
@@ -245,6 +276,9 @@ fun ArNavigationScreen(
     var miniMapVisible by remember { mutableStateOf(true) }
     var miniRecenter by remember { mutableIntStateOf(0) }
     var lastSpoken by remember { mutableStateOf("") }
+    var cameraIntrinsics by remember {
+        mutableStateOf(CameraIntrinsics.fallback())
+    }
 
     val voice=remember { NavigationVoice(ctx.applicationContext) }
     DisposableEffect(Unit) { onDispose { voice.close() } }
@@ -261,32 +295,18 @@ fun ArNavigationScreen(
     val target=nav.nextWaypoint
     val heading=nav.orientation.headingDeg
 
-    val relativeBearing=remember(current,target,heading) {
-        if(current==null || target==null || heading.isNaN()) 0f
-        else NavigationSession.normalizeSigned(
-            NavigationSession.bearing(current,target)-heading
-        )
-    }
-
     val routeSamples=remember(
-        current,heading,nav.waypoints,nav.waypointIndex,nav.route
+        current,
+        nav.route?.points,
+        nav.routeProgressM
     ) {
-        if(current==null || heading.isNaN()) emptyList()
-        else {
-            val future=nav.waypoints
-                .drop(nav.waypointIndex)
-                .filter { NavigationSession.distance(current,it)>3.0 }
-                .take(5)
-
-            future.map { p ->
-                RouteProjectionSample(
-                    relativeBearing=NavigationSession.normalizeSigned(
-                        NavigationSession.bearing(current,p)-heading
-                    ),
-                    distanceM=NavigationSession.distance(current,p)
-                )
-            }
-        }
+        val route=nav.route?.points.orEmpty()
+        if(current==null || route.size<2) emptyList()
+        else RouteCameraProjection.resample(
+            route=route,
+            current=current,
+            progressM=nav.routeProgressM
+        )
     }
 
     LaunchedEffect(nav.instruction,nav.phase,muted) {
@@ -330,7 +350,8 @@ fun ArNavigationScreen(
             CameraPreview(
                 modifier=Modifier.fillMaxSize(),
                 torchEnabled=torch,
-                onTorchAvailable={ torchAvailable=it }
+                onTorchAvailable={ torchAvailable=it },
+                onIntrinsics={ cameraIntrinsics=it }
             )
         } else {
             Box(
@@ -346,12 +367,12 @@ fun ArNavigationScreen(
             }
         }
 
-        PerspectiveRouteOverlay(
+        WorldRouteOverlay(
             current=current,
             routeSamples=routeSamples,
-            relativeBearing=relativeBearing,
-            pitch=nav.orientation.pitchDeg,
-            roll=nav.orientation.rollDeg,
+            orientation=nav.orientation,
+            intrinsics=cameraIntrinsics,
+            confidence=nav.confidence,
             visible=nav.route!=null && target!=null
         )
 
@@ -786,6 +807,25 @@ fun ArNavigationScreen(
                         fontWeight=FontWeight.Bold
                     )
                 }
+            }
+        }
+
+        if(abs(nav.orientation.pitchDeg)>68f && nav.route!=null) {
+            Surface(
+                modifier=Modifier
+                    .align(Alignment.Center)
+                    .padding(horizontal=90.dp),
+                shape=RoundedCornerShape(18.dp),
+                color=HudNavy.copy(alpha=.88f),
+                border=BorderStroke(1.dp,HudBorder.copy(alpha=.7f))
+            ) {
+                Text(
+                    "Levante o celular para visualizar a rota",
+                    color=Color.White,
+                    fontSize=10.sp,
+                    textAlign=TextAlign.Center,
+                    modifier=Modifier.padding(horizontal=14.dp,vertical=9.dp)
+                )
             }
         }
 
