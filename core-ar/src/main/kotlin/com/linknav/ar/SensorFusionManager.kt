@@ -56,86 +56,146 @@ class SensorFusionManager(context:Context) {
 
     fun orientations():Flow<OrientationState> = callbackFlow {
         val rotation=sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
-            ?: sm.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
-            ?: run {
-                close()
-                return@callbackFlow
-            }
+        val accelerometer=sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+        val magnetometer=sm.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
+
+        if(rotation==null && (accelerometer==null || magnetometer==null)) {
+            close()
+            return@callbackFlow
+        }
 
         var accuracy=0
+        var gravity:FloatArray?=null
+        var magnetic:FloatArray?=null
+
+        fun lowPass(old:FloatArray?,fresh:FloatArray,alpha:Float=.18f):FloatArray {
+            if(old==null) return fresh.clone()
+            val out=old.clone()
+            for(i in out.indices) {
+                out[i]+=alpha*(fresh[i]-out[i])
+            }
+            return out
+        }
+
+        fun processRawMatrix(raw:FloatArray,timestampNs:Long) {
+            val remapped=FloatArray(9)
+            @Suppress("DEPRECATION")
+            val displayRotation=dm.getDisplay(Display.DEFAULT_DISPLAY)?.rotation
+                ?: Surface.ROTATION_0
+
+            val axes=when(displayRotation) {
+                Surface.ROTATION_90 ->
+                    SensorManager.AXIS_Y to SensorManager.AXIS_MINUS_X
+                Surface.ROTATION_180 ->
+                    SensorManager.AXIS_MINUS_X to SensorManager.AXIS_MINUS_Y
+                Surface.ROTATION_270 ->
+                    SensorManager.AXIS_MINUS_Y to SensorManager.AXIS_X
+                else ->
+                    SensorManager.AXIS_X to SensorManager.AXIS_Y
+            }
+
+            if(!SensorManager.remapCoordinateSystem(raw,axes.first,axes.second,remapped)) {
+                return
+            }
+
+            // Rotation matrix columns are display-device axes expressed in
+            // world coordinates. Back camera looks along -Z.
+            val rawRight=Vec3(remapped[0],remapped[3],remapped[6]).normalized()
+            val rawForward=Vec3(-remapped[2],-remapped[5],-remapped[8]).normalized()
+
+            val dt=if(lastTimestampNs==0L) .016
+            else ((timestampNs-lastTimestampNs).coerceAtLeast(1L)/1_000_000_000.0)
+                .coerceIn(.004,.080)
+            lastTimestampNs=timestampNs
+
+            // One low-latency smoothing stage. It converges to the real
+            // orientation; it never scales down the final angle.
+            val alpha=(1.0-exp(-dt/.022)).toFloat().coerceIn(.28f,.90f)
+
+            val forward=filteredForward?.blend(rawForward,alpha) ?: rawForward
+            var right=filteredRight?.blend(rawRight,alpha) ?: rawRight
+            var up=right.cross(forward).normalized()
+            right=forward.cross(up).normalized()
+            up=right.cross(forward).normalized()
+
+            filteredForward=forward
+            filteredRight=right
+
+            val horizontal=hypot(forward.x,forward.y)
+            val heading=if(horizontal>.08f) {
+                ((Math.toDegrees(atan2(forward.x,forward.y).toDouble())+360.0)%360.0).toFloat()
+            } else lastHeading
+            if(!heading.isNaN()) lastHeading=heading
+
+            val pitch=Math.toDegrees(
+                asin(forward.z.coerceIn(-1f,1f).toDouble())
+            ).toFloat()
+            val roll=Math.toDegrees(
+                atan2(right.z,up.z).toDouble()
+            ).toFloat()
+
+            trySend(
+                OrientationState(
+                    headingDeg=heading,
+                    pitchDeg=pitch,
+                    rollDeg=roll,
+                    accuracy=accuracy,
+                    forwardEast=forward.x,
+                    forwardNorth=forward.y,
+                    forwardUp=forward.z,
+                    rightEast=right.x,
+                    rightNorth=right.y,
+                    rightUp=right.z,
+                    upEast=up.x,
+                    upNorth=up.y,
+                    upUp=up.z,
+                    timestampNs=timestampNs
+                )
+            )
+        }
+
         val listener=object:SensorEventListener {
             override fun onAccuracyChanged(sensor:Sensor?,value:Int) {
-                accuracy=value
+                if(
+                    sensor?.type==Sensor.TYPE_ROTATION_VECTOR ||
+                    sensor?.type==Sensor.TYPE_MAGNETIC_FIELD
+                ) accuracy=value
             }
 
             override fun onSensorChanged(event:SensorEvent) {
-                val raw=FloatArray(9)
-                SensorManager.getRotationMatrixFromVector(raw,event.values)
-
-                val remapped=FloatArray(9)
-                val displayRotation=dm.getDisplay(Display.DEFAULT_DISPLAY)?.rotation
-                    ?: Surface.ROTATION_0
-                val axes=when(displayRotation) {
-                    Surface.ROTATION_90 ->
-                        SensorManager.AXIS_Y to SensorManager.AXIS_MINUS_X
-                    Surface.ROTATION_180 ->
-                        SensorManager.AXIS_MINUS_X to SensorManager.AXIS_MINUS_Y
-                    Surface.ROTATION_270 ->
-                        SensorManager.AXIS_MINUS_Y to SensorManager.AXIS_X
-                    else ->
-                        SensorManager.AXIS_X to SensorManager.AXIS_Y
+                if(rotation!=null && event.sensor.type==Sensor.TYPE_ROTATION_VECTOR) {
+                    val raw=FloatArray(9)
+                    SensorManager.getRotationMatrixFromVector(raw,event.values)
+                    processRawMatrix(raw,event.timestamp)
+                    return
                 }
-                SensorManager.remapCoordinateSystem(raw,axes.first,axes.second,remapped)
 
-                val rawRight=Vec3(remapped[0],remapped[3],remapped[6]).normalized()
-                val rawForward=Vec3(-remapped[2],-remapped[5],-remapped[8]).normalized()
-
-                val dt=if(lastTimestampNs==0L) .016
-                else ((event.timestamp-lastTimestampNs).coerceAtLeast(1L)/1_000_000_000.0)
-                    .coerceIn(.004,.080)
-                lastTimestampNs=event.timestamp
-                val alpha=(1.0-exp(-dt/.028)).toFloat().coerceIn(.24f,.86f)
-
-                val forward=filteredForward?.blend(rawForward,alpha) ?: rawForward
-                var right=filteredRight?.blend(rawRight,alpha) ?: rawRight
-                var up=right.cross(forward).normalized()
-                right=forward.cross(up).normalized()
-                up=right.cross(forward).normalized()
-
-                filteredForward=forward
-                filteredRight=right
-
-                val horizontal=hypot(forward.x,forward.y)
-                val rawHeading=if(horizontal>.08f) {
-                    ((Math.toDegrees(atan2(forward.x,forward.y).toDouble())+360.0)%360.0).toFloat()
-                } else lastHeading
-                if(!rawHeading.isNaN()) lastHeading=rawHeading
-
-                val pitch=Math.toDegrees(asin(forward.z.coerceIn(-1f,1f).toDouble())).toFloat()
-                val roll=Math.toDegrees(atan2(right.z,up.z).toDouble()).toFloat()
-
-                trySend(
-                    OrientationState(
-                        headingDeg=rawHeading,
-                        pitchDeg=pitch,
-                        rollDeg=roll,
-                        accuracy=accuracy,
-                        forwardEast=forward.x,
-                        forwardNorth=forward.y,
-                        forwardUp=forward.z,
-                        rightEast=right.x,
-                        rightNorth=right.y,
-                        rightUp=right.z,
-                        upEast=up.x,
-                        upNorth=up.y,
-                        upUp=up.z,
-                        timestampNs=event.timestamp
-                    )
-                )
+                if(rotation==null) {
+                    when(event.sensor.type) {
+                        Sensor.TYPE_ACCELEROMETER ->
+                            gravity=lowPass(gravity,event.values)
+                        Sensor.TYPE_MAGNETIC_FIELD ->
+                            magnetic=lowPass(magnetic,event.values)
+                    }
+                    val g=gravity
+                    val m=magnetic
+                    if(g!=null && m!=null) {
+                        val raw=FloatArray(9)
+                        if(SensorManager.getRotationMatrix(raw,null,g,m)) {
+                            processRawMatrix(raw,event.timestamp)
+                        }
+                    }
+                }
             }
         }
 
-        sm.registerListener(listener,rotation,SensorManager.SENSOR_DELAY_GAME)
+        if(rotation!=null) {
+            sm.registerListener(listener,rotation,SensorManager.SENSOR_DELAY_GAME)
+        } else {
+            sm.registerListener(listener,accelerometer,SensorManager.SENSOR_DELAY_GAME)
+            sm.registerListener(listener,magnetometer,SensorManager.SENSOR_DELAY_GAME)
+        }
+
         awaitClose { sm.unregisterListener(listener) }
     }
 }

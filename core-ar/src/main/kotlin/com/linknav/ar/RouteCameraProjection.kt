@@ -28,7 +28,9 @@ data class ProjectedRouteSample(
 )
 
 object RouteCameraProjection {
-    private val defaultDistances=doubleArrayOf(3.5,6.0,9.0,13.0,18.0,25.0,34.0,46.0)
+    private val defaultDistances=doubleArrayOf(
+        3.5,5.0,6.8,9.0,11.8,15.2,19.5,24.5,30.5,38.0,47.0,58.0
+    )
 
     fun resample(
         route:List<GeoPoint>,
@@ -52,12 +54,29 @@ object RouteCameraProjection {
 
         return requested.mapNotNull { targetDistance ->
             val p=pointAt(route,cumulative,targetDistance) ?: return@mapNotNull null
-            val before=pointAt(route,cumulative,(targetDistance-1.0).coerceAtLeast(0.0)) ?: p
-            val after=pointAt(route,cumulative,(targetDistance+1.5).coerceAtMost(total)) ?: p
+
+            val tangentWindow=when {
+                targetDistance-start<8.0 -> 1.2
+                targetDistance-start<20.0 -> 2.0
+                else -> 3.2
+            }
+            val before=pointAt(
+                route,cumulative,(targetDistance-tangentWindow).coerceAtLeast(0.0)
+            ) ?: p
+            val after=pointAt(
+                route,cumulative,(targetDistance+tangentWindow).coerceAtMost(total)
+            ) ?: p
+
             val tangentEnu=enu(before,after)
             val tLen=hypot(tangentEnu.first,tangentEnu.second)
             if(tLen<1e-4) return@mapNotNull null
+
+            // IMPORTANT: current is the real camera/GPS position, not the
+            // map-matched point. Progress is still taken from map matching.
+            // This preserves lateral offset instead of forcing the AR route
+            // back to screen center.
             val local=enu(current,p)
+
             RouteWorldSample(
                 distanceAheadM=(targetDistance-start).coerceAtLeast(0.0),
                 eastM=local.first,
@@ -78,33 +97,55 @@ object RouteCameraProjection {
     ):List<ProjectedRouteSample> {
         if(samples.isEmpty() || viewportWidth<=1f || viewportHeight<=1f) return emptyList()
 
-        val hfov=Math.toRadians(intrinsics.horizontalFovDeg.toDouble().coerceIn(20.0,140.0))
-        val vfov=Math.toRadians(intrinsics.verticalFovDeg.toDouble().coerceIn(20.0,140.0))
+        val hfov=Math.toRadians(
+            intrinsics.horizontalFovDeg.toDouble().coerceIn(20.0,140.0)
+        )
+        val vfov=Math.toRadians(
+            intrinsics.verticalFovDeg.toDouble().coerceIn(20.0,140.0)
+        )
         val fx=(viewportWidth/2f/tan(hfov/2.0)).toFloat()
         val fy=(viewportHeight/2f/tan(vfov/2.0)).toFloat()
         val cx=viewportWidth/2f
         val cy=viewportHeight/2f
 
         fun camera(e:Double,n:Double,u:Double):Triple<Float,Float,Float> {
-            val x=(e*orientation.rightEast+n*orientation.rightNorth+u*orientation.rightUp).toFloat()
-            val y=(e*orientation.upEast+n*orientation.upNorth+u*orientation.upUp).toFloat()
-            val z=(e*orientation.forwardEast+n*orientation.forwardNorth+u*orientation.forwardUp).toFloat()
+            val x=(
+                e*orientation.rightEast+
+                n*orientation.rightNorth+
+                u*orientation.rightUp
+            ).toFloat()
+            val y=(
+                e*orientation.upEast+
+                n*orientation.upNorth+
+                u*orientation.upUp
+            ).toFloat()
+            val z=(
+                e*orientation.forwardEast+
+                n*orientation.forwardNorth+
+                u*orientation.forwardUp
+            ).toFloat()
             return Triple(x,y,z)
         }
 
         return samples.map { sample ->
             val (x,y,z)=camera(sample.eastM,sample.northM,sample.upM)
-            val safeZ=z.coerceAtLeast(.15f)
-            val sx=cx+fx*x/safeZ
-            val sy=cy-fy*y/safeZ
+            val inFront=z>.35f
 
-            val tangentScale=(sample.distanceAheadM*.10).coerceIn(1.2,3.2)
+            val sx=if(inFront) cx+fx*x/z else Float.NaN
+            val sy=if(inFront) cy-fy*y/z else Float.NaN
+
+            val tangentScale=when {
+                sample.distanceAheadM<8.0 -> 1.2
+                sample.distanceAheadM<20.0 -> 2.0
+                else -> 3.0
+            }
             val (tx,ty,tz)=camera(
                 sample.eastM+sample.tangentEast*tangentScale,
                 sample.northM+sample.tangentNorth*tangentScale,
                 sample.upM
             )
-            val angle=if(tz>.15f) {
+
+            val angle=if(inFront && tz>.35f) {
                 val sx2=cx+fx*tx/tz
                 val sy2=cy-fy*ty/tz
                 Math.toDegrees(
@@ -120,13 +161,16 @@ object RouteCameraProjection {
                 screenX=sx,
                 screenY=sy,
                 depthM=z,
-                pixelsPerMeter=if(z>.15f) fx/z else 0f,
+                pixelsPerMeter=if(inFront) fx/z else 0f,
                 rotationDeg=angle,
                 cameraX=x,
                 cameraY=y,
-                visible=z>.45f &&
-                    sx>=0f && sx<=viewportWidth &&
-                    sy>=0f && sy<=viewportHeight
+                visible=inFront &&
+                    sx.isFinite() && sy.isFinite() &&
+                    sx>=-viewportWidth*.05f &&
+                    sx<=viewportWidth*1.05f &&
+                    sy>=-viewportHeight*.05f &&
+                    sy<=viewportHeight*1.05f
             )
         }
     }
@@ -154,10 +198,12 @@ object RouteCameraProjection {
             val mid=(lo+hi)/2
             if(cumulative[mid]<=distanceM) lo=mid else hi=mid
         }
+
         val segmentLength=(cumulative[lo+1]-cumulative[lo]).coerceAtLeast(1e-6)
         val t=((distanceM-cumulative[lo])/segmentLength).coerceIn(0.0,1.0)
         val a=route[lo]
         val b=route[lo+1]
+
         return GeoPoint(
             latitude=a.latitude+(b.latitude-a.latitude)*t,
             longitude=a.longitude+(b.longitude-a.longitude)*t,
@@ -169,9 +215,9 @@ object RouteCameraProjection {
     }
 
     private fun enu(origin:GeoPoint,target:GeoPoint):Pair<Double,Double> {
-        val north=(target.latitude-origin.latitude)*111320.0
-        val east=(target.longitude-origin.longitude)*111320.0*
-            cos(Math.toRadians((target.latitude+origin.latitude)/2.0))
+        val meanLat=Math.toRadians((target.latitude+origin.latitude)/2.0)
+        val north=(target.latitude-origin.latitude)*111132.92
+        val east=(target.longitude-origin.longitude)*111412.84*cos(meanLat)
         return east to north
     }
 }

@@ -120,11 +120,22 @@ private fun WorldRouteOverlay(
         for(i in 0 until track.lastIndex) {
             val a=track[i]
             val b=track[i+1]
+            if(
+                !a.screenX.isFinite() || !a.screenY.isFinite() ||
+                !b.screenX.isFinite() || !b.screenY.isFinite()
+            ) continue
+
+            val depthAlpha=(
+                1f-(minOf(a.distanceAheadM,b.distanceAheadM)/70.0).toFloat()
+            ).coerceIn(.18f,1f)
             val stroke=(
-                minOf(a.pixelsPerMeter,b.pixelsPerMeter)*.18f
-            ).coerceIn(2f,size.width*.022f)
+                minOf(a.pixelsPerMeter,b.pixelsPerMeter)*.22f
+            ).coerceIn(2f,size.width*.028f)
+
             drawLine(
-                color=Color(0xFF3D74FF).copy(alpha=.17f*alphaBase),
+                color=Color(0xFF267CFF).copy(
+                    alpha=.24f*alphaBase*depthAlpha
+                ),
                 start=Offset(a.screenX,a.screenY),
                 end=Offset(b.screenX,b.screenY),
                 strokeWidth=stroke
@@ -140,7 +151,10 @@ private fun WorldRouteOverlay(
             if(i==mainIndex) continue
             val sample=projected[i]
             if(!sample.visible) continue
-            val w=(sample.pixelsPerMeter*1.05f)
+            val depthScale=(
+                1f-(sample.distanceAheadM/70.0).toFloat()
+            ).coerceIn(.28f,1f)
+            val w=(sample.pixelsPerMeter*1.15f*depthScale)
                 .coerceIn(size.width*.018f,size.width*.16f)
             val h=w*.44f
             val path=chevronPath(sample.screenX,sample.screenY,w,h)
@@ -171,8 +185,8 @@ private fun WorldRouteOverlay(
 
         val main=projected.getOrNull(mainIndex)
         if(main!=null && main.visible) {
-            val mainW=(main.pixelsPerMeter*1.85f)
-                .coerceIn(size.width*.13f,size.width*.30f)
+            val mainW=(main.pixelsPerMeter*1.95f)
+                .coerceIn(size.width*.12f,size.width*.30f)
             val mainH=mainW*.96f
             val x=main.screenX
             val y=main.screenY
@@ -310,7 +324,7 @@ fun ArNavigationScreen(
         if(current==null || route.size<2) emptyList()
         else RouteCameraProjection.resample(
             route=route,
-            current=nav.matchedPoint ?: current,
+            current=current,
             progressM=nav.routeProgressM
         )
     }
