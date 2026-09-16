@@ -1,6 +1,7 @@
 package com.linknav.navigation
 
 import android.content.Context
+import android.hardware.GeomagneticField
 import com.linknav.location.AndroidLocationEngine
 import com.linknav.location.GeoPoint
 import com.linknav.location.LocationState
@@ -20,7 +21,17 @@ data class DeviceOrientation(
     val headingDeg:Float=Float.NaN,
     val pitchDeg:Float=0f,
     val rollDeg:Float=0f,
-    val accuracy:Int=0
+    val accuracy:Int=0,
+    val forwardEast:Float=0f,
+    val forwardNorth:Float=1f,
+    val forwardUp:Float=0f,
+    val rightEast:Float=1f,
+    val rightNorth:Float=0f,
+    val rightUp:Float=0f,
+    val upEast:Float=0f,
+    val upNorth:Float=0f,
+    val upUp:Float=1f,
+    val timestampNs:Long=0L
 )
 
 data class NavigationSessionState(
@@ -37,7 +48,10 @@ data class NavigationSessionState(
     val instruction:String="",
     val confidence:Float=0f,
     val progress:Float=0f,
-    val wrongDirection:Boolean=false
+    val wrongDirection:Boolean=false,
+    val matchedPoint:GeoPoint?=null,
+    val matchedSegmentIndex:Int=0,
+    val routeProgressM:Double=0.0
 )
 
 class NavigationSession(
@@ -52,6 +66,13 @@ class NavigationSession(
     private var offRouteSince=0L
     private var rerouteCooldownUntil=0L
     private var lastHeading=Float.NaN
+    private var lastMatchedSegment=-1
+    private var lastRouteProgressM=0.0
+
+    private var declinationDeg=0f
+    private var declinationAtMs=0L
+    private var declinationLat=Double.NaN
+    private var declinationLon=Double.NaN
 
     init {
         scope.launch {
@@ -62,6 +83,8 @@ class NavigationSession(
     }
 
     fun setRoute(route:Route?) {
+        lastMatchedSegment=-1
+        lastRouteProgressM=0.0
         if(route==null){
             _state.value=_state.value.copy(
                 phase=if(_state.value.location.point==null) NavigationPhase.LOCATING else NavigationPhase.IDLE,
@@ -73,7 +96,10 @@ class NavigationSession(
                 remainingM=0.0,
                 instruction="",
                 progress=0f,
-                wrongDirection=false
+                wrongDirection=false,
+                matchedPoint=null,
+                matchedSegmentIndex=0,
+                routeProgressM=0.0
             )
             return
         }
@@ -83,9 +109,12 @@ class NavigationSession(
             waypoints=waypoints,
             waypointIndex=0,
             nextWaypoint=waypoints.firstOrNull(),
-            remainingM=route.distanceM,
+            remainingM=polylineLength(route.points),
             phase=NavigationPhase.NAVIGATING,
-            progress=0f
+            progress=0f,
+            matchedPoint=null,
+            matchedSegmentIndex=0,
+            routeProgressM=0.0
         )
         _state.value.location.point?.let { updateNavigation(it) }
     }
@@ -94,16 +123,56 @@ class NavigationSession(
         headingDeg:Float,
         pitchDeg:Float,
         rollDeg:Float,
-        accuracy:Int
+        accuracy:Int,
+        forwardEast:Float=0f,
+        forwardNorth:Float=1f,
+        forwardUp:Float=0f,
+        rightEast:Float=1f,
+        rightNorth:Float=0f,
+        rightUp:Float=0f,
+        upEast:Float=0f,
+        upNorth:Float=0f,
+        upUp:Float=1f,
+        timestampNs:Long=0L
     ) {
-        val h=if(headingDeg.isNaN()) lastHeading else headingDeg
-        if(!h.isNaN()) lastHeading=h
-        _state.value=_state.value.copy(
-            orientation=DeviceOrientation(h,pitchDeg,rollDeg,accuracy)
-        )
-        _state.value.location.point?.let { point ->
-            if(_state.value.route!=null) updateNavigation(point)
+        val declination=currentDeclination()
+        val h=when {
+            headingDeg.isNaN() -> lastHeading
+            else -> normalize360(headingDeg+declination)
         }
+        if(!h.isNaN()) lastHeading=h
+
+        fun trueHorizontal(e:Float,n:Float):Pair<Float,Float> {
+            val d=Math.toRadians(declination.toDouble())
+            return (
+                e*cos(d)+n*sin(d)
+            ).toFloat() to (
+                -e*sin(d)+n*cos(d)
+            ).toFloat()
+        }
+
+        val f=trueHorizontal(forwardEast,forwardNorth)
+        val r=trueHorizontal(rightEast,rightNorth)
+        val u=trueHorizontal(upEast,upNorth)
+
+        _state.value=_state.value.copy(
+            orientation=DeviceOrientation(
+                headingDeg=h,
+                pitchDeg=pitchDeg,
+                rollDeg=rollDeg,
+                accuracy=accuracy,
+                forwardEast=f.first,
+                forwardNorth=f.second,
+                forwardUp=forwardUp,
+                rightEast=r.first,
+                rightNorth=r.second,
+                rightUp=rightUp,
+                upEast=u.first,
+                upNorth=u.second,
+                upUp=upUp,
+                timestampNs=timestampNs
+            )
+        )
     }
 
     fun recenterNavigation() {
@@ -137,30 +206,55 @@ class NavigationSession(
         val route=s.route ?: return
         if(route.points.size<2) return
 
-        val matched=MapMatcher.match(point,route.points)
-        val segment=matched?.segmentIndex ?: 0
+        val matched=MapMatcher.match(
+            point,
+            route.points,
+            lastMatchedSegment.takeIf { it>=0 }
+        )
+        val segment=matched?.segmentIndex ?: lastMatchedSegment.coerceAtLeast(0)
         val error=matched?.errorM ?: Double.POSITIVE_INFINITY
         val currentOnRoute=matched?.point ?: point
+        val total=polylineLength(route.points).coerceAtLeast(1.0)
+
+        val rawProgress=matched?.distanceAlongRouteM ?: lastRouteProgressM
+        val allowedBacktrack=if(point.speedMps<.8f) 6.0 else 14.0
+        val stabilized=if(lastMatchedSegment>=0)
+            rawProgress.coerceAtLeast(lastRouteProgressM-allowedBacktrack)
+        else rawProgress
+
+        if(lastMatchedSegment<0 || stabilized>=lastRouteProgressM-2.0) {
+            lastRouteProgressM=max(lastRouteProgressM,stabilized)
+        } else {
+            lastRouteProgressM=stabilized
+        }
+        lastRouteProgressM=lastRouteProgressM.coerceIn(0.0,total)
+        if(matched!=null) lastMatchedSegment=matched.segmentIndex
 
         val waypoints=s.waypoints.ifEmpty { simplifyWaypoints(route.points) }
-        var index=if(forceWaypoint) nearestForwardWaypoint(point,waypoints) else s.waypointIndex
-        while(index < waypoints.lastIndex && distance(point,waypoints[index]) < 11.0) {
+        var index=if(forceWaypoint) {
+            nearestForwardWaypointByRoute(lastRouteProgressM,waypoints,route.points)
+        } else s.waypointIndex.coerceIn(0,waypoints.lastIndex.coerceAtLeast(0))
+
+        while(index<waypoints.lastIndex) {
+            val waypointProgress=routeDistanceOfPoint(waypoints[index],route.points)
+            if(waypointProgress-lastRouteProgressM>=11.0) break
             index++
         }
+
         val target=waypoints.getOrNull(index) ?: route.points.last()
-        val toTarget=distance(point,target)
-        val remaining=remainingAlongRoute(currentOnRoute,route.points,segment)
-        val progress=if(route.distanceM>1.0)
-            (1.0-(remaining/route.distanceM)).coerceIn(0.0,1.0).toFloat()
-        else 1f
+        val targetProgress=routeDistanceOfPoint(target,route.points)
+        val toTarget=(targetProgress-lastRouteProgressM).coerceAtLeast(0.0)
+        val remaining=(total-lastRouteProgressM).coerceAtLeast(0.0)
+        val progress=(lastRouteProgressM/total).coerceIn(0.0,1.0).toFloat()
 
         val orientation=s.orientation
-        val routeBearing=bearing(point,target)
+        val routeBearing=bearingAlongRoute(route.points,segment)
         val relative=if(orientation.headingDeg.isNaN()) 0f
         else normalizeSigned(routeBearing-orientation.headingDeg)
         val wrong=point.speedMps>1.2f && abs(relative)>125f
+
         val instruction=instructionFor(
-            point=point,
+            point=currentOnRoute,
             target=target,
             next=waypoints.getOrNull(index+1),
             distanceM=toTarget
@@ -177,10 +271,11 @@ class NavigationSession(
             else -> .45f
         }
         val routeScore=(1f-(error.coerceAtMost(80.0)/90.0).toFloat()).coerceIn(.2f,1f)
-        val confidence=(accuracyScore*.5f+sensorScore*.28f+routeScore*.22f).coerceIn(.12f,.98f)
+        val confidence=(accuracyScore*.46f+sensorScore*.30f+routeScore*.24f).coerceIn(.12f,.98f)
 
         val now=System.currentTimeMillis()
-        val isOffRoute=error>45.0
+        val offRouteThreshold=max(32.0,(point.accuracyM.takeIf { it.isFinite() } ?: 12f)*2.2)
+        val isOffRoute=error>offRouteThreshold
         if(isOffRoute) {
             if(offRouteSince==0L) offRouteSince=now
         } else {
@@ -191,9 +286,12 @@ class NavigationSession(
         val arriving=!arrived && remaining<65.0
         val phase=when {
             arrived -> NavigationPhase.ARRIVED
-            now<rerouteCooldownUntil && s.phase==NavigationPhase.RECALCULATING -> NavigationPhase.RECALCULATING
-            isOffRoute && offRouteSince>0L && now-offRouteSince>3500L -> NavigationPhase.OFF_ROUTE
-            point.accuracyM.isFinite() && point.accuracyM>55f -> NavigationPhase.LOW_GPS_ACCURACY
+            now<rerouteCooldownUntil && s.phase==NavigationPhase.RECALCULATING ->
+                NavigationPhase.RECALCULATING
+            isOffRoute && offRouteSince>0L && now-offRouteSince>3500L ->
+                NavigationPhase.OFF_ROUTE
+            point.accuracyM.isFinite() && point.accuracyM>55f ->
+                NavigationPhase.LOW_GPS_ACCURACY
             arriving -> NavigationPhase.ARRIVING
             else -> NavigationPhase.NAVIGATING
         }
@@ -210,7 +308,10 @@ class NavigationSession(
             instruction=instruction,
             confidence=confidence,
             progress=progress,
-            wrongDirection=wrong
+            wrongDirection=wrong,
+            matchedPoint=currentOnRoute,
+            matchedSegmentIndex=segment,
+            routeProgressM=lastRouteProgressM
         )
 
         if(phase==NavigationPhase.OFF_ROUTE && now>=rerouteCooldownUntil) {
@@ -255,9 +356,32 @@ class NavigationSession(
         return out
     }
 
-    private fun nearestForwardWaypoint(point:GeoPoint,waypoints:List<GeoPoint>):Int {
+    private fun nearestForwardWaypointByRoute(
+        progressM:Double,
+        waypoints:List<GeoPoint>,
+        route:List<GeoPoint>
+    ):Int {
         if(waypoints.isEmpty()) return 0
-        return waypoints.indices.minByOrNull { distance(point,waypoints[it]) } ?: 0
+        return waypoints.indices.firstOrNull {
+            routeDistanceOfPoint(waypoints[it],route)>=progressM-3.0
+        } ?: waypoints.lastIndex
+    }
+
+    private fun routeDistanceOfPoint(point:GeoPoint,route:List<GeoPoint>):Double {
+        if(route.isEmpty()) return 0.0
+        val exact=route.indexOf(point)
+        val index=if(exact>=0) exact else route.indices.minByOrNull {
+            distance(route[it],point)
+        } ?: 0
+        var total=0.0
+        for(i in 0 until index) total+=distance(route[i],route[i+1])
+        return total
+    }
+
+    private fun bearingAlongRoute(points:List<GeoPoint>,segment:Int):Float {
+        if(points.size<2) return 0f
+        val i=segment.coerceIn(0,points.lastIndex-1)
+        return bearing(points[i],points[i+1])
     }
 
     private fun instructionFor(
@@ -290,16 +414,30 @@ class NavigationSession(
         return abs(normalizeSigned(b-a).toDouble())
     }
 
-    private fun remainingAlongRoute(
-        current:GeoPoint,
-        points:List<GeoPoint>,
-        segment:Int
-    ):Double {
-        var total=distance(current,points[(segment+1).coerceAtMost(points.lastIndex)])
-        for(i in (segment+1) until points.lastIndex) {
-            total+=distance(points[i],points[i+1])
+    private fun currentDeclination():Float {
+        val p=_state.value.location.point ?: return 0f
+        val now=System.currentTimeMillis()
+        val moved=if(declinationLat.isFinite() && declinationLon.isFinite()) {
+            distance(
+                GeoPoint(declinationLat,declinationLon),
+                GeoPoint(p.latitude,p.longitude)
+            )
+        } else Double.POSITIVE_INFINITY
+
+        if(now-declinationAtMs>600_000L || moved>1000.0 || !declinationLat.isFinite()) {
+            declinationDeg=runCatching {
+                GeomagneticField(
+                    p.latitude.toFloat(),
+                    p.longitude.toFloat(),
+                    0f,
+                    now
+                ).declination
+            }.getOrDefault(0f)
+            declinationAtMs=now
+            declinationLat=p.latitude
+            declinationLon=p.longitude
         }
-        return total
+        return declinationDeg
     }
 
     companion object {
@@ -323,5 +461,13 @@ class NavigationSession(
 
         fun normalizeSigned(value:Float):Float =
             ((value+540f)%360f)-180f
+
+        fun polylineLength(points:List<GeoPoint>):Double {
+            var total=0.0
+            for(i in 0 until points.lastIndex) total+=distance(points[i],points[i+1])
+            return total
+        }
+
+        private fun normalize360(value:Float):Float=((value%360f)+360f)%360f
     }
 }

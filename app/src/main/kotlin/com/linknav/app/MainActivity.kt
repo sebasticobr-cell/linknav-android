@@ -49,10 +49,20 @@ private fun LinkNavApp(){
     LaunchedEffect(sensors) {
         sensors.orientations().collect { o ->
             navigation.updateOrientation(
-                o.headingDeg,
-                o.pitchDeg,
-                o.rollDeg,
-                o.accuracy
+                headingDeg=o.headingDeg,
+                pitchDeg=o.pitchDeg,
+                rollDeg=o.rollDeg,
+                accuracy=o.accuracy,
+                forwardEast=o.forwardEast,
+                forwardNorth=o.forwardNorth,
+                forwardUp=o.forwardUp,
+                rightEast=o.rightEast,
+                rightNorth=o.rightNorth,
+                rightUp=o.rightUp,
+                upEast=o.upEast,
+                upNorth=o.upNorth,
+                upUp=o.upUp,
+                timestampNs=o.timestampNs
             )
         }
     }
