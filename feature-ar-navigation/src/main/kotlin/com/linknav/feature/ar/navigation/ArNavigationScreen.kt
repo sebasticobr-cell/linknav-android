@@ -131,7 +131,18 @@ private fun WorldRouteOverlay(
             )
         }
 
-        for(i in projected.lastIndex downTo 1) {
+        val preferredMain=projected.indexOfFirst {
+            it.visible && it.screenY<size.height*.64f
+        }
+        val fallbackMain=projected.indexOfFirst { it.visible }
+        val mainIndex=when {
+            preferredMain>=0 -> preferredMain
+            fallbackMain>=0 -> fallbackMain
+            else -> -1
+        }
+
+        for(i in projected.lastIndex downTo 0) {
+            if(i==mainIndex) continue
             val sample=projected[i]
             if(!sample.visible) continue
             val w=(sample.pixelsPerMeter*1.05f)
@@ -163,10 +174,10 @@ private fun WorldRouteOverlay(
             }
         }
 
-        val main=projected.firstOrNull()
+        val main=projected.getOrNull(mainIndex)
         if(main!=null && main.visible) {
-            val mainW=(main.pixelsPerMeter*1.35f)
-                .coerceIn(size.width*.13f,size.width*.31f)
+            val mainW=(main.pixelsPerMeter*1.85f)
+                .coerceIn(size.width*.16f,size.width*.31f)
             val mainH=mainW*.96f
             val x=main.screenX
             val y=main.screenY
