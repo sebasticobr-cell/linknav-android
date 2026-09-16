@@ -28,7 +28,7 @@ data class ProjectedRouteSample(
 )
 
 object RouteCameraProjection {
-    private val defaultDistances=doubleArrayOf(4.0,8.0,14.0,22.0,34.0)
+    private val defaultDistances=doubleArrayOf(3.5,6.0,9.0,13.0,18.0,25.0,34.0,45.0)
 
     fun resample(
         route:List<GeoPoint>,
@@ -98,7 +98,7 @@ object RouteCameraProjection {
             val sx=cx+fx*x/safeZ
             val sy=cy-fy*y/safeZ
 
-            val tangentScale=1.35
+            val tangentScale=(sample.distanceAheadM*.10).coerceIn(1.2,3.2)
             val (tx,ty,tz)=camera(
                 sample.eastM+sample.tangentEast*tangentScale,
                 sample.northM+sample.tangentNorth*tangentScale,
@@ -124,7 +124,7 @@ object RouteCameraProjection {
                 rotationDeg=angle,
                 cameraX=x,
                 cameraY=y,
-                visible=z>.45f &&
+                visible=z>.65f &&
                     sx>-viewportWidth*.12f && sx<viewportWidth*1.12f &&
                     sy>-viewportHeight*.15f && sy<viewportHeight*1.12f
             )

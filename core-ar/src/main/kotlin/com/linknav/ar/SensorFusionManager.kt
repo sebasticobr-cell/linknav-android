@@ -94,7 +94,7 @@ class SensorFusionManager(context:Context) {
                 else ((event.timestamp-lastTimestampNs).coerceAtLeast(1L)/1_000_000_000.0)
                     .coerceIn(.004,.080)
                 lastTimestampNs=event.timestamp
-                val alpha=(1.0-exp(-dt/.045)).toFloat().coerceIn(.16f,.72f)
+                val alpha=(1.0-exp(-dt/.028)).toFloat().coerceIn(.24f,.86f)
 
                 val forward=filteredForward?.blend(rawForward,alpha) ?: rawForward
                 var right=filteredRight?.blend(rawRight,alpha) ?: rawRight

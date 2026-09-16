@@ -82,153 +82,48 @@ private fun chevronPath(
 
 @Composable
 private fun WorldRouteOverlay(
-    current:GeoPoint?,
-    routeSamples:List<RouteWorldSample>,
+    current:GeoPoint?, routeSamples:List<RouteWorldSample>,
     orientation:com.linknav.navigation.DeviceOrientation,
-    intrinsics:CameraIntrinsics,
-    confidence:Float,
-    visible:Boolean
+    intrinsics:CameraIntrinsics, confidence:Float, visible:Boolean
 ) {
-    if(
-        !visible ||
-        current==null ||
-        routeSamples.isEmpty() ||
-        orientation.headingDeg.isNaN()
-    ) return
-
+    if(!visible || current==null || routeSamples.isEmpty() || orientation.headingDeg.isNaN()) return
     Canvas(Modifier.fillMaxSize()) {
-        val projected=RouteCameraProjection.project(
-            samples=routeSamples,
-            orientation=orientation,
-            intrinsics=intrinsics,
-            viewportWidth=size.width,
-            viewportHeight=size.height
-        )
+        val projected=RouteCameraProjection.project(routeSamples,orientation,intrinsics,size.width,size.height)
         if(projected.isEmpty()) return@Canvas
-
-        val alphaBase=(.46f+confidence.coerceIn(0f,1f)*.54f)
-            .coerceIn(.46f,1f)
-
-        val track=projected.filter {
-            it.depthM>.45f &&
-            it.screenX>-size.width*.15f &&
-            it.screenX<size.width*1.15f &&
-            it.screenY>-size.height*.15f &&
-            it.screenY<size.height*1.15f
-        }
-
+        val alphaBase=(.46f+confidence.coerceIn(0f,1f)*.54f).coerceIn(.46f,1f)
+        val track=projected.filter { it.visible && it.depthM>.65f }
         for(i in 0 until track.lastIndex) {
-            val a=track[i]
-            val b=track[i+1]
-            val stroke=(
-                minOf(a.pixelsPerMeter,b.pixelsPerMeter)*.18f
-            ).coerceIn(2f,size.width*.022f)
-            drawLine(
-                color=Color(0xFF3D74FF).copy(alpha=.17f*alphaBase),
-                start=Offset(a.screenX,a.screenY),
-                end=Offset(b.screenX,b.screenY),
-                strokeWidth=stroke
-            )
+            val a=track[i]; val b=track[i+1]
+            if(kotlin.math.abs(a.distanceAheadM-b.distanceAheadM)>14.0) continue
+            val stroke=(minOf(a.pixelsPerMeter,b.pixelsPerMeter)*.11f).coerceIn(1.5f,size.width*.014f)
+            drawLine(Color(0xFF3D74FF).copy(alpha=.13f*alphaBase),Offset(a.screenX,a.screenY),Offset(b.screenX,b.screenY),stroke)
         }
-
-        val preferredMain=projected.indexOfFirst {
-            it.visible && it.screenY<size.height*.64f
-        }
-        val fallbackMain=projected.indexOfFirst { it.visible }
-        val mainIndex=when {
-            preferredMain>=0 -> preferredMain
-            fallbackMain>=0 -> fallbackMain
-            else -> -1
-        }
-
+        val main=projected.firstOrNull { it.visible && it.depthM>.65f }
+        val mainIndex=if(main==null) -1 else projected.indexOf(main)
         for(i in projected.lastIndex downTo 0) {
             if(i==mainIndex) continue
             val sample=projected[i]
-            if(!sample.visible) continue
-            val w=(sample.pixelsPerMeter*1.05f)
-                .coerceIn(size.width*.035f,size.width*.18f)
-            val h=w*.44f
-            val path=chevronPath(sample.screenX,sample.screenY,w,h)
-
+            if(!sample.visible || sample.depthM<=.65f) continue
+            val fade=(1f-(sample.distanceAheadM/58.0).toFloat()).coerceIn(.22f,.88f)
+            val w=(sample.pixelsPerMeter*.62f).coerceIn(size.width*.018f,size.width*.105f); val h=w*.42f
             rotate(sample.rotationDeg,pivot=Offset(sample.screenX,sample.screenY)) {
-                drawPath(
-                    path=chevronPath(
-                        sample.screenX,
-                        sample.screenY,
-                        w*1.30f,
-                        h*1.30f
-                    ),
-                    color=Color(0xFF3F62FF).copy(alpha=.08f*alphaBase)
-                )
-                drawPath(
-                    path=path,
-                    brush=Brush.verticalGradient(
-                        colors=listOf(
-                            Color(0xFF7378FF).copy(alpha=.70f*alphaBase),
-                            Color(0xFF326EFF).copy(alpha=.88f*alphaBase)
-                        ),
-                        startY=sample.screenY-h,
-                        endY=sample.screenY+h
-                    )
-                )
+                drawPath(chevronPath(sample.screenX,sample.screenY,w*1.32f,h*1.32f),Color(0xFF365CFF).copy(alpha=.07f*alphaBase*fade))
+                drawPath(chevronPath(sample.screenX,sample.screenY,w,h),Brush.verticalGradient(listOf(Color(0xFF777DFF).copy(alpha=.62f*alphaBase*fade),Color(0xFF326EFF).copy(alpha=.88f*alphaBase*fade)),sample.screenY-h,sample.screenY+h))
             }
         }
-
-        val main=projected.getOrNull(mainIndex)
-        if(main!=null && main.visible) {
-            val mainW=(main.pixelsPerMeter*1.85f)
-                .coerceIn(size.width*.16f,size.width*.31f)
-            val mainH=mainW*.96f
-            val x=main.screenX
-            val y=main.screenY
-
+        if(main!=null) {
+            val w=(main.pixelsPerMeter*.92f).coerceIn(size.width*.095f,size.width*.25f); val h=w*.96f; val x=main.screenX; val y=main.screenY
             rotate(main.rotationDeg,pivot=Offset(x,y)) {
-                drawPath(
-                    navigationArrowPath(x,y,mainW*1.35f,mainH*1.30f),
-                    Color(0x103E86FF).copy(alpha=alphaBase)
-                )
-                drawPath(
-                    navigationArrowPath(x,y,mainW*1.18f,mainH*1.15f),
-                    Color(0x28437EFF).copy(alpha=alphaBase)
-                )
-                drawPath(
-                    navigationArrowPath(x,y,mainW,mainH),
-                    Brush.verticalGradient(
-                        colors=listOf(
-                            Color(0xFF148EFF).copy(alpha=alphaBase),
-                            Color(0xFF216BFF).copy(alpha=alphaBase),
-                            Color(0xFF4A4FF1).copy(alpha=alphaBase)
-                        ),
-                        startY=y-mainH*.50f,
-                        endY=y+mainH*.42f
-                    )
-                )
-                drawCircle(
-                    color=Color.White.copy(alpha=alphaBase),
-                    radius=mainW*.075f,
-                    center=Offset(x,y+mainH*.14f)
-                )
+                drawPath(navigationArrowPath(x,y,w*1.42f,h*1.34f),Color(0x123E86FF).copy(alpha=alphaBase))
+                drawPath(navigationArrowPath(x,y,w*1.18f,h*1.14f),Color(0x30437EFF).copy(alpha=alphaBase))
+                drawPath(navigationArrowPath(x,y,w,h),Brush.verticalGradient(listOf(Color(0xFF148EFF),Color(0xFF216BFF),Color(0xFF4A4FF1)).map { it.copy(alpha=alphaBase) },y-h*.50f,y+h*.42f))
+                drawCircle(Color.White.copy(alpha=alphaBase),w*.075f,Offset(x,y+h*.14f))
             }
         }
-
         if(projected.none { it.visible }) {
-            val cue=projected.firstOrNull()
-            if(cue!=null) {
-                val right=cue.cameraX>=0f
-                val x=if(right) size.width*.91f else size.width*.09f
-                val y=size.height*.53f
-                val w=size.width*.075f
-                val h=w*.82f
-                rotate(
-                    degrees=if(right) 90f else -90f,
-                    pivot=Offset(x,y)
-                ) {
-                    drawPath(
-                        navigationArrowPath(x,y,w,h),
-                        Color(0xCC357BFF)
-                    )
-                }
-            }
+            val cue=projected.firstOrNull() ?: return@Canvas
+            val right=cue.cameraX>=0f; val x=if(right) size.width*.91f else size.width*.09f; val y=size.height*.53f; val w=size.width*.075f
+            rotate(if(right) 90f else -90f,pivot=Offset(x,y)) { drawPath(navigationArrowPath(x,y,w,w*.82f),Color(0xCC357BFF)) }
         }
     }
 }

@@ -217,7 +217,7 @@ class NavigationSession(
         val total=polylineLength(route.points).coerceAtLeast(1.0)
 
         val rawProgress=matched?.distanceAlongRouteM ?: lastRouteProgressM
-        val allowedBacktrack=if(point.speedMps<.8f) 6.0 else 14.0
+        val allowedBacktrack=if(point.speedMps<.8f) 3.0 else 7.0
         val stabilized=if(lastMatchedSegment>=0)
             rawProgress.coerceAtLeast(lastRouteProgressM-allowedBacktrack)
         else rawProgress
