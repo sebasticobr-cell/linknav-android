@@ -208,6 +208,9 @@ fun LinkNavMap(
     recenterToken:Int=0,
     northToken:Int=0,
     styleUri:String="https://tiles.openfreemap.org/styles/liberty",
+    showAttribution:Boolean=true,
+    showAccuracy:Boolean=true,
+    followZoom:Double=15.7,
     onViewportIdle:(MapViewport)->Unit={},
     onPoiClick:(String)->Unit={}
 ) {
@@ -381,7 +384,7 @@ fun LinkNavMap(
                 v.onCreate(null)
                 v.getMapAsync { map ->
                     map.uiSettings.isCompassEnabled=false
-                    map.uiSettings.isAttributionEnabled=true
+                    map.uiSettings.isAttributionEnabled=showAttribution
                     map.setMaxZoomPreference(22.0)
                     map.addOnCameraIdleListener { if(styleReady) emitViewport(map) }
                     map.addOnMapClickListener { latLng ->
@@ -415,14 +418,20 @@ fun LinkNavMap(
                             it.addNumberProperty("bearing",p.bearingDeg)
                         }
                     )
-                    style.getSourceAs<GeoJsonSource>(ACCURACY_SOURCE)?.setGeoJson(
-                        Feature.fromGeometry(accuracyPolygon(p))
-                    )
+                    if(showAccuracy) {
+                        style.getSourceAs<GeoJsonSource>(ACCURACY_SOURCE)?.setGeoJson(
+                            Feature.fromGeometry(accuracyPolygon(p))
+                        )
+                    } else {
+                        style.getSourceAs<GeoJsonSource>(ACCURACY_SOURCE)?.setGeoJson(
+                            FeatureCollection.fromFeatures(emptyList<Feature>())
+                        )
+                    }
 
                     if(firstFix || recenterToken!=lastRecenter) {
                         firstFix=false
                         lastRecenter=recenterToken
-                        val zoom=if(map.cameraPosition.zoom<14.0) 15.7 else map.cameraPosition.zoom
+                        val zoom=if(map.cameraPosition.zoom<14.0) followZoom else map.cameraPosition.zoom
                         map.animateCamera(
                             CameraUpdateFactory.newLatLngZoom(LatLng(p.latitude,p.longitude),zoom),
                             600
