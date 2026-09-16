@@ -4,107 +4,145 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.linknav.camera.CameraPreview
 import com.linknav.map.LinkNavMap
 import com.linknav.navigation.NavigationPhase
 import com.linknav.navigation.NavigationSession
 import com.linknav.voice.NavigationVoice
-import kotlin.math.abs
-import kotlin.math.sin
+import java.util.Locale
 
-private fun DrawScope.chevron(
-    centerX:Float,
-    centerY:Float,
-    sizePx:Float,
-    rotationDeg:Float,
-    color:Color
-) {
-    val path=Path().apply {
-        moveTo(centerX,centerY-sizePx)
-        lineTo(centerX+sizePx*.72f,centerY+sizePx*.55f)
-        lineTo(centerX,centerY+sizePx*.25f)
-        lineTo(centerX-sizePx*.72f,centerY+sizePx*.55f)
-        close()
-    }
-    drawPath(
-        path=path,
-        color=color
-    )
+private val CamNavy=Color(0xE61A2034)
+private val CamBorder=Color(0xFF465474)
+private val CamPurple=Color(0xFF7042F1)
+private val CamBlue=Color(0xFF2380FF)
+
+private fun Path.navigationArrow(cx:Float,cy:Float,size:Float) {
+    moveTo(cx,cy-size)
+    lineTo(cx+size*.72f,cy+size*.76f)
+    lineTo(cx,cy+size*.44f)
+    lineTo(cx-size*.72f,cy+size*.76f)
+    close()
 }
 
 @Composable
-private fun WorldRouteOverlay(
+private fun GroundRouteOverlay(
     relativeBearing:Float,
     pitch:Float,
     roll:Float,
-    active:Boolean
+    visible:Boolean
 ) {
-    Canvas(
-        Modifier.fillMaxSize()
-    ) {
-        val clamped=(relativeBearing/70f).coerceIn(-1f,1f)
-        val rollShift=(roll/90f).coerceIn(-.3f,.3f)
-        val pitchShift=(pitch/90f).coerceIn(-.22f,.22f)
+    if(!visible) return
 
-        for(i in 0 until 6) {
-            val depth=i/5f
-            val y=size.height*(
-                .77f-depth*.34f-pitchShift*.16f
+    Canvas(Modifier.fillMaxSize()) {
+        val bearingShift=(relativeBearing/80f).coerceIn(-1f,1f)
+        val rollShift=(roll/75f).coerceIn(-.35f,.35f)
+        val pitchShift=(pitch/80f).coerceIn(-.25f,.25f)
+
+        val baseX=size.width*.50f+
+            bearingShift*size.width*.22f+
+            rollShift*size.width*.08f
+        val baseY=size.height*(.58f-pitchShift*.10f)
+
+        for(i in 0 until 5) {
+            val depth=i/4f
+            val y=baseY-depth*size.height*.17f
+            val x=baseX-bearingShift*depth*size.width*.06f
+            val s=size.minDimension*(.055f-depth*.022f)
+
+            val p=Path().apply { navigationArrow(x,y,s) }
+            rotate(relativeBearing*.32f,pivot=Offset(x,y)) {
+                drawPath(
+                    path=p,
+                    brush=Brush.verticalGradient(
+                        colors=listOf(
+                            Color(0xAA6F78FF),
+                            Color(0x885A52F4)
+                        ),
+                        startY=y-s,
+                        endY=y+s
+                    )
+                )
+            }
+        }
+
+        val mainY=size.height*(.70f-pitchShift*.07f)
+        val mainSize=size.minDimension*.145f
+        val glow=Path().apply {
+            navigationArrow(baseX,mainY,mainSize*1.08f)
+        }
+        rotate(relativeBearing*.42f,pivot=Offset(baseX,mainY)) {
+            drawPath(glow,Color(0x33479BFF))
+        }
+
+        val main=Path().apply {
+            navigationArrow(baseX,mainY,mainSize)
+        }
+        rotate(relativeBearing*.42f,pivot=Offset(baseX,mainY)) {
+            drawPath(
+                main,
+                brush=Brush.verticalGradient(
+                    listOf(Color(0xFF128BFF),Color(0xFF2857F8))
+                )
             )
-            val perspective=1f-depth*.62f
-            val x=size.width*.5f+
-                clamped*size.width*(.30f-depth*.12f)+
-                rollShift*size.width*.08f
-
-            val alpha=if(active)
-                (.86f-depth*.40f)
-            else
-                (.34f-depth*.18f)
-
-            chevron(
-                centerX=x,
-                centerY=y,
-                sizePx=size.minDimension*.12f*perspective,
-                rotationDeg=relativeBearing,
-                color=Color(0xFF2E7BFF).copy(alpha=alpha)
+            drawCircle(
+                color=Color.White,
+                radius=mainSize*.11f,
+                center=Offset(baseX,mainY+mainSize*.10f)
             )
         }
     }
 }
 
 @Composable
-private fun RoundControl(
+private fun CircleControl(
     label:String,
     icon:@Composable ()->Unit,
     onClick:()->Unit,
     enabled:Boolean=true
 ) {
-    FilledTonalButton(
-        onClick=onClick,
-        enabled=enabled,
-        modifier=Modifier.size(width=94.dp,height=68.dp),
-        contentPadding=PaddingValues(4.dp)
+    Surface(
+        modifier=Modifier.size(82.dp).clickable(enabled=enabled,onClick=onClick),
+        shape=CircleShape,
+        color=CamNavy,
+        border=BorderStroke(1.dp,CamBorder.copy(alpha=.9f)),
+        shadowElevation=7.dp
     ) {
         Column(
-            horizontalAlignment=Alignment.CenterHorizontally
+            Modifier.fillMaxSize(),
+            horizontalAlignment=Alignment.CenterHorizontally,
+            verticalArrangement=Arrangement.Center
         ) {
             icon()
+            Spacer(Modifier.height(5.dp))
             Text(
                 label,
-                style=MaterialTheme.typography.labelSmall
+                color=if(enabled) Color.White else Color.White.copy(alpha=.45f),
+                fontSize=11.sp,
+                textAlign=TextAlign.Center
             )
         }
     }
@@ -127,7 +165,7 @@ fun ArNavigationScreen(
     var torch by remember { mutableStateOf(false) }
     var torchAvailable by remember { mutableStateOf(false) }
     var muted by remember { mutableStateOf(false) }
-    var miniMap by remember { mutableStateOf(true) }
+    var miniMapVisible by remember { mutableStateOf(true) }
     var miniRecenter by remember { mutableIntStateOf(0) }
     var lastSpoken by remember { mutableStateOf("") }
 
@@ -155,35 +193,21 @@ fun ArNavigationScreen(
         )
     }
 
-    LaunchedEffect(
-        nav.instruction,
-        nav.phase,
-        muted
-    ) {
+    LaunchedEffect(nav.instruction,nav.phase,muted) {
         if(muted) return@LaunchedEffect
-
         val phrase=when(nav.phase) {
-            NavigationPhase.RECALCULATING ->
-                "Recalculando rota."
-            NavigationPhase.OFF_ROUTE ->
-                "Você saiu da rota."
-            NavigationPhase.ARRIVED ->
-                "Destino alcançado."
+            NavigationPhase.RECALCULATING -> "Rota recalculada."
+            NavigationPhase.OFF_ROUTE -> "Você saiu da rota."
+            NavigationPhase.ARRIVED -> "Destino alcançado."
             else -> nav.instruction
         }.trim()
-
-        if(
-            phrase.isNotBlank() &&
-            phrase!=lastSpoken
-        ) {
+        if(phrase.isNotBlank() && phrase!=lastSpoken) {
             lastSpoken=phrase
             voice.speak(phrase)
         }
     }
 
-    Box(
-        Modifier.fillMaxSize()
-    ) {
+    Box(Modifier.fillMaxSize()) {
         if(granted) {
             CameraPreview(
                 modifier=Modifier.fillMaxSize(),
@@ -191,97 +215,97 @@ fun ArNavigationScreen(
                 onTorchAvailable={ torchAvailable=it }
             )
         } else {
-            Surface(
-                modifier=Modifier.align(Alignment.Center),
-                color=Color(0xDD101426),
-                shape=MaterialTheme.shapes.extraLarge
+            Box(
+                Modifier.fillMaxSize().background(Color.Black),
+                contentAlignment=Alignment.Center
             ) {
                 Text(
                     "Permita o uso da câmera para iniciar o LINKNAV VISION.",
-                    Modifier.padding(24.dp),
-                    color=Color.White
+                    color=Color.White,
+                    modifier=Modifier.padding(26.dp),
+                    textAlign=TextAlign.Center
                 )
             }
         }
 
-        WorldRouteOverlay(
+        GroundRouteOverlay(
             relativeBearing=relativeBearing,
             pitch=nav.orientation.pitchDeg,
             roll=nav.orientation.rollDeg,
-            active=nav.route!=null && target!=null
+            visible=nav.route!=null && target!=null
         )
 
         Surface(
             modifier=Modifier
+                .align(Alignment.TopCenter)
                 .fillMaxWidth()
-                .padding(12.dp)
-                .align(Alignment.TopCenter),
-            color=Color(0xDD101426),
-            shape=MaterialTheme.shapes.extraLarge,
+                .padding(start=14.dp,end=14.dp,top=14.dp),
+            shape=RoundedCornerShape(27.dp),
+            color=CamNavy,
+            border=BorderStroke(1.dp,CamBorder),
             shadowElevation=10.dp
         ) {
             Row(
-                Modifier.padding(14.dp),
+                Modifier.padding(horizontal=16.dp,vertical=13.dp),
                 verticalAlignment=Alignment.CenterVertically
             ) {
                 Icon(
                     Icons.Default.Navigation,
-                    contentDescription=null,
-                    tint=Color(0xFF7657FF),
-                    modifier=Modifier.size(38.dp)
+                    null,
+                    tint=Color(0xFF7160FF),
+                    modifier=Modifier.size(42.dp)
                 )
-                Spacer(Modifier.width(10.dp))
-                Column(
-                    Modifier.weight(.42f)
-                ) {
+                Spacer(Modifier.width(11.dp))
+                Column(Modifier.weight(.44f)) {
                     Text(
                         "LINKNAV",
                         color=Color.White,
-                        fontWeight=FontWeight.ExtraBold,
-                        style=MaterialTheme.typography.titleLarge
+                        fontSize=23.sp,
+                        fontWeight=FontWeight.ExtraBold
                     )
                     Text(
                         "Modo Câmera",
-                        color=Color(0xFFB7C4E8),
-                        style=MaterialTheme.typography.bodyMedium
+                        color=Color(0xFFB5C0DE),
+                        fontSize=14.sp
                     )
                 }
-
-                Column(
-                    Modifier.weight(.46f)
-                ) {
+                Column(Modifier.weight(.48f)) {
                     Text(
                         when(nav.phase) {
                             NavigationPhase.ARRIVED -> "Destino alcançado"
                             NavigationPhase.RECALCULATING -> "Recalculando rota"
                             else -> "Rota para destino"
                         },
-                        color=Color.White,
-                        style=MaterialTheme.typography.bodySmall
+                        color=Color(0xFFD8DDF0),
+                        fontSize=11.sp
                     )
+                    Spacer(Modifier.height(6.dp))
                     LinearProgressIndicator(
                         progress={ nav.progress },
-                        modifier=Modifier
-                            .fillMaxWidth()
-                            .height(6.dp)
+                        modifier=Modifier.fillMaxWidth().height(7.dp),
+                        color=Color(0xFF7159FF),
+                        trackColor=Color(0xFF35405E)
                     )
+                    Spacer(Modifier.height(5.dp))
                     Text(
                         if(nav.waypoints.isNotEmpty())
                             "${(nav.waypointIndex+1).coerceAtMost(nav.waypoints.size)} de ${nav.waypoints.size} pontos"
-                        else "Aguardando rota",
-                        color=Color(0xFFB7C4E8),
-                        style=MaterialTheme.typography.labelSmall
+                        else
+                            "Aguardando rota",
+                        color=Color(0xFFB5C0DE),
+                        fontSize=11.sp
                     )
                 }
-
-                IconButton(
-                    onClick=onBack
+                Spacer(Modifier.width(8.dp))
+                Surface(
+                    modifier=Modifier.size(48.dp).clickable(onClick=onBack),
+                    shape=CircleShape,
+                    color=Color(0xFF242C47),
+                    border=BorderStroke(1.dp,CamBorder)
                 ) {
-                    Icon(
-                        Icons.Default.Close,
-                        contentDescription="Fechar",
-                        tint=Color.White
-                    )
+                    Box(contentAlignment=Alignment.Center) {
+                        Icon(Icons.Default.Close,"Fechar",tint=Color.White,modifier=Modifier.size(28.dp))
+                    }
                 }
             }
         }
@@ -289,28 +313,31 @@ fun ArNavigationScreen(
         Column(
             modifier=Modifier
                 .align(Alignment.CenterStart)
-                .padding(start=14.dp),
+                .padding(start=14.dp)
+                .offset(y=(-88).dp),
             verticalArrangement=Arrangement.spacedBy(12.dp)
         ) {
-            RoundControl(
+            CircleControl(
                 label=if(torch) "Lanterna ON" else "Lanterna",
                 icon={
                     Icon(
-                        Icons.Default.FlashOn,
-                        contentDescription=null
+                        Icons.Default.FlashlightOn,
+                        null,
+                        tint=if(torch) Color(0xFFFFE27A) else Color.White,
+                        modifier=Modifier.size(28.dp)
                     )
                 },
                 onClick={ torch=!torch },
                 enabled=torchAvailable
             )
-
-            RoundControl(
+            CircleControl(
                 label=if(muted) "Som" else "Silenciar",
                 icon={
                     Icon(
-                        if(muted) Icons.Default.VolumeUp
-                        else Icons.Default.VolumeOff,
-                        contentDescription=null
+                        if(muted) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
+                        null,
+                        tint=Color.White,
+                        modifier=Modifier.size(28.dp)
                     )
                 },
                 onClick={ muted=!muted }
@@ -320,73 +347,66 @@ fun ArNavigationScreen(
         Column(
             modifier=Modifier
                 .align(Alignment.CenterEnd)
-                .padding(end=14.dp),
-            verticalArrangement=Arrangement.spacedBy(12.dp),
-            horizontalAlignment=Alignment.End
+                .padding(end=14.dp)
+                .offset(y=(-62).dp),
+            verticalArrangement=Arrangement.spacedBy(15.dp),
+            horizontalAlignment=Alignment.CenterHorizontally
         ) {
-            if(miniMap) {
+            if(miniMapVisible) {
                 Surface(
-                    modifier=Modifier.size(
-                        width=174.dp,
-                        height=152.dp
-                    ),
-                    shape=MaterialTheme.shapes.extraLarge,
-                    color=Color(0xCC101426),
-                    shadowElevation=10.dp
+                    modifier=Modifier
+                        .width(166.dp)
+                        .height(136.dp),
+                    shape=RoundedCornerShape(22.dp),
+                    color=CamNavy,
+                    border=BorderStroke(1.dp,CamBorder),
+                    shadowElevation=9.dp
                 ) {
                     Box {
                         LinkNavMap(
                             modifier=Modifier.fillMaxSize(),
                             point=current?.let {
-                                val h=nav.orientation.headingDeg
-                                if(!h.isNaN()) it.copy(bearingDeg=h) else it
+                                if(!heading.isNaN()) it.copy(bearingDeg=heading) else it
                             },
                             route=nav.route?.points.orEmpty(),
                             places=emptyList(),
                             satellite=false,
                             recenterToken=miniRecenter
                         )
-
-                        FilledTonalButton(
-                            onClick={ miniMap=false },
+                        Surface(
                             modifier=Modifier
                                 .align(Alignment.BottomCenter)
-                                .padding(6.dp),
-                            contentPadding=PaddingValues(
-                                horizontal=10.dp,
-                                vertical=5.dp
-                            )
+                                .fillMaxWidth()
+                                .height(37.dp)
+                                .clickable { miniMapVisible=false },
+                            color=Color(0xDD1A2034)
                         ) {
-                            Icon(
-                                Icons.Default.Map,
-                                contentDescription=null,
-                                modifier=Modifier.size(16.dp)
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Text("Mapa mini")
+                            Row(
+                                Modifier.fillMaxSize(),
+                                horizontalArrangement=Arrangement.Center,
+                                verticalAlignment=Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Map,null,tint=Color.White,modifier=Modifier.size(18.dp))
+                                Spacer(Modifier.width(7.dp))
+                                Text("Mapa mini",color=Color.White,fontSize=12.sp)
+                            }
                         }
                     }
                 }
             } else {
-                RoundControl(
+                CircleControl(
                     label="Mapa mini",
                     icon={
-                        Icon(
-                            Icons.Default.Map,
-                            contentDescription=null
-                        )
+                        Icon(Icons.Default.Map,null,tint=Color.White,modifier=Modifier.size(28.dp))
                     },
-                    onClick={ miniMap=true }
+                    onClick={ miniMapVisible=true }
                 )
             }
 
-            RoundControl(
+            CircleControl(
                 label="Centralizar",
                 icon={
-                    Icon(
-                        Icons.Default.MyLocation,
-                        contentDescription=null
-                    )
+                    Icon(Icons.Default.MyLocation,null,tint=Color.White,modifier=Modifier.size(30.dp))
                 },
                 onClick={
                     navigation.recenterNavigation()
@@ -397,34 +417,31 @@ fun ArNavigationScreen(
 
         Surface(
             modifier=Modifier
+                .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .padding(
-                    start=18.dp,
-                    end=18.dp,
-                    bottom=86.dp
-                )
-                .align(Alignment.BottomCenter),
-            color=Color(0xE611162B),
-            shape=MaterialTheme.shapes.extraLarge,
-            shadowElevation=12.dp
+                .padding(start=15.dp,end=15.dp,bottom=85.dp),
+            shape=RoundedCornerShape(29.dp),
+            color=CamNavy,
+            border=BorderStroke(1.dp,CamBorder),
+            shadowElevation=11.dp
         ) {
             Column(
-                Modifier.padding(16.dp),
-                verticalArrangement=Arrangement.spacedBy(8.dp)
+                Modifier.padding(horizontal=18.dp,vertical=15.dp),
+                verticalArrangement=Arrangement.spacedBy(9.dp)
             ) {
-                Row(
-                    verticalAlignment=Alignment.CenterVertically
-                ) {
+                Row(verticalAlignment=Alignment.CenterVertically) {
                     Icon(
-                        Icons.Default.Navigation,
-                        contentDescription=null,
-                        tint=Color(0xFF3A86FF),
-                        modifier=Modifier.size(56.dp)
+                        when {
+                            nav.wrongDirection -> Icons.Default.Undo
+                            nav.phase==NavigationPhase.ARRIVED -> Icons.Default.Flag
+                            else -> Icons.Default.ArrowUpward
+                        },
+                        null,
+                        tint=CamBlue,
+                        modifier=Modifier.size(58.dp)
                     )
-                    Spacer(Modifier.width(14.dp))
-                    Column(
-                        Modifier.weight(1f)
-                    ) {
+                    Spacer(Modifier.width(15.dp))
+                    Column(Modifier.weight(1f)) {
                         Text(
                             when(nav.phase) {
                                 NavigationPhase.ARRIVED -> "Destino alcançado"
@@ -433,116 +450,109 @@ fun ArNavigationScreen(
                                 NavigationPhase.RECALCULATING -> "Recalculando"
                                 else -> "Próximo ponto"
                             },
-                            color=Color(0xFFCAD4F4)
+                            color=Color(0xFFCBD3EB),
+                            fontSize=16.sp
                         )
                         Text(
-                            if(target!=null)
-                                "${nav.distanceToWaypointM.toInt()} m"
-                            else "—",
+                            if(target!=null) "${nav.distanceToWaypointM.toInt()} m" else "—",
                             color=Color.White,
-                            style=MaterialTheme.typography.displaySmall,
+                            fontSize=46.sp,
+                            lineHeight=48.sp,
                             fontWeight=FontWeight.ExtraBold
                         )
                         Text(
                             when {
-                                nav.wrongDirection ->
-                                    "Você está seguindo na direção contrária."
-                                nav.instruction.isNotBlank() ->
-                                    nav.instruction
-                                nav.route==null ->
-                                    "Inicie uma rota no mapa."
-                                else ->
-                                    "Aguardando orientação da rota…"
+                                nav.wrongDirection -> "Você está seguindo na direção contrária."
+                                nav.instruction.isNotBlank() -> nav.instruction
+                                nav.route==null -> "Inicie uma rota no mapa."
+                                else -> "Aguardando orientação da rota…"
                             },
-                            color=Color(0xFFE3E8FA)
+                            color=Color(0xFFE1E7F8),
+                            fontSize=14.sp
                         )
                     }
                 }
 
-                if(
-                    !heading.isNaN() &&
-                    nav.orientation.accuracy<2
-                ) {
+                if(!heading.isNaN() && nav.orientation.accuracy<2) {
                     Text(
-                        "Precisão da bússola baixa • mova o aparelho em forma de 8 para calibrar.",
-                        color=Color(0xFFFFC857),
-                        style=MaterialTheme.typography.bodySmall
+                        "Precisão da bússola baixa.",
+                        color=Color(0xFFFFCF67),
+                        fontSize=11.sp
                     )
                 }
 
-                HorizontalDivider(
-                    color=Color.White.copy(alpha=.14f)
-                )
+                HorizontalDivider(color=Color.White.copy(alpha=.12f))
 
                 Row(
-                    horizontalArrangement=Arrangement.SpaceBetween,
-                    modifier=Modifier.fillMaxWidth()
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment=Alignment.CenterVertically
                 ) {
                     Row(
+                        modifier=Modifier.weight(1f),
                         verticalAlignment=Alignment.CenterVertically
                     ) {
                         Icon(
-                            Icons.Default.CheckCircle,
-                            contentDescription=null,
-                            tint=Color(0xFF6FE8C1),
-                            modifier=Modifier.size(18.dp)
+                            Icons.Default.Verified,
+                            null,
+                            tint=Color(0xFF6CE6C2),
+                            modifier=Modifier.size(20.dp)
                         )
-                        Spacer(Modifier.width(6.dp))
+                        Spacer(Modifier.width(7.dp))
                         Text(
                             "Confiança ${(nav.confidence*100).toInt()}%",
                             color=Color.White,
-                            style=MaterialTheme.typography.bodySmall
+                            fontSize=13.sp,
+                            fontWeight=FontWeight.SemiBold
                         )
                     }
 
                     current?.let {
-                        Row(
-                            verticalAlignment=Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                Icons.Default.GpsFixed,
-                                contentDescription=null,
-                                tint=if(it.accuracyM<=35f)
-                                    Color(0xFF8C6CFF)
-                                else Color(0xFFFFC857),
-                                modifier=Modifier.size(18.dp)
-                            )
-                            Spacer(Modifier.width(5.dp))
+                        Column(horizontalAlignment=Alignment.End) {
+                            Row(verticalAlignment=Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Default.Place,
+                                    null,
+                                    tint=Color(0xFF8D6BFF),
+                                    modifier=Modifier.size(20.dp)
+                                )
+                                Spacer(Modifier.width(5.dp))
+                                Text(
+                                    "GPS ±${it.accuracyM.toInt()} m",
+                                    color=Color.White,
+                                    fontSize=13.sp
+                                )
+                            }
                             Text(
-                                "GPS ±${it.accuracyM.toInt()} m",
-                                color=Color.White,
-                                style=MaterialTheme.typography.bodySmall
+                                "${"%.5f".format(Locale.US,it.latitude)}, ${"%.5f".format(Locale.US,it.longitude)}",
+                                color=Color(0xFFA9B4D0),
+                                fontSize=10.sp
                             )
                         }
                     }
                 }
-
-                current?.let {
-                    Text(
-                        "${"%.5f".format(it.latitude)}, ${"%.5f".format(it.longitude)}",
-                        color=Color(0xFF9EABD2),
-                        style=MaterialTheme.typography.labelSmall
-                    )
-                }
             }
         }
 
-        Button(
-            onClick=onBack,
+        Surface(
             modifier=Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom=18.dp),
-            contentPadding=PaddingValues(
-                horizontal=28.dp,
-                vertical=12.dp
-            )
+                .padding(bottom=18.dp)
+                .width(176.dp)
+                .height(54.dp)
+                .clickable(onClick=onBack),
+            shape=RoundedCornerShape(27.dp),
+            color=CamPurple,
+            shadowElevation=9.dp
         ) {
-            Icon(
-                Icons.Default.Map,
-                contentDescription=null
-            )
-            Spacer(Modifier.width(7.dp))
-            Text("Ver mapa")
+            Row(
+                Modifier.fillMaxSize(),
+                verticalAlignment=Alignment.CenterVertically,
+                horizontalArrangement=Arrangement.Center
+            ) {
+                Icon(Icons.Default.Map,null,tint=Color.White,modifier=Modifier.size(25.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Ver mapa",color=Color.White,fontSize=17.sp,fontWeight=FontWeight.Bold)
+            }
         }
     }
 }
