@@ -320,11 +320,23 @@ fun MapScreen(
         if(!h.isNaN()) p.copy(bearingDeg=h) else p
     }
 
+    val bootstrapCell=currentPoint?.let {
+        "${(it.latitude*100.0).toInt()}:${(it.longitude*100.0).toInt()}"
+    }
+
+    LaunchedEffect(bootstrapCell) {
+        val p=currentPoint ?: return@LaunchedEffect
+        val nearby=withContext(Dispatchers.IO) { search.nearbyIndex(p,radiusM=5000,limit=700) }
+        if(nearby.isNotEmpty()) {
+            visiblePlaces=(visiblePlaces+nearby).distinctBy { it.id }.takeLast(1600)
+        }
+    }
+
     val rankedPlaces=remember(visiblePlaces,selectedCategory) {
         visiblePlaces
             .filter { categoryMatch(it.category,selectedCategory) }
             .sortedByDescending { poiPriority(it.category) }
-            .take(340)
+            .take(700)
     }
     val mapPois=remember(rankedPlaces) {
         rankedPlaces.map { MapPoi(it.id,it.name,it.category,it.location) }
@@ -393,9 +405,9 @@ fun MapScreen(
         delay(450)
         val pv=PoiViewport(v.north,v.south,v.east,v.west,v.zoom)
         val cached=poiRepository.cached(pv)
-        if(cached.isNotEmpty()) visiblePlaces=(visiblePlaces+cached).distinctBy { it.id }.takeLast(800)
+        if(cached.isNotEmpty()) visiblePlaces=(visiblePlaces+cached).distinctBy { it.id }.takeLast(1600)
         val result=withContext(Dispatchers.IO) { poiRepository.load(pv) }
-        if(result.places.isNotEmpty()) visiblePlaces=(visiblePlaces+result.places).distinctBy { it.id }.takeLast(800)
+        if(result.places.isNotEmpty()) visiblePlaces=(visiblePlaces+result.places).distinctBy { it.id }.takeLast(1600)
         if(result.stale && result.fromCache) status="Dados em cache"
     }
 
@@ -531,7 +543,16 @@ fun MapScreen(
                 }
                 Surface(
                     modifier=Modifier.width((w*s).dp).fillMaxHeight().clickable {
-                        selectedCategory=if(selectedCategory==name) null else name
+                        val next=if(selectedCategory==name) null else name
+                        selectedCategory=next
+                        if(next!=null && currentPoint!=null) {
+                            scope.launch {
+                                val extra=withContext(Dispatchers.IO) { search.search(next,currentPoint,60) }
+                                if(extra.isNotEmpty()) {
+                                    visiblePlaces=(visiblePlaces+extra).distinctBy { it.id }.takeLast(1600)
+                                }
+                            }
+                        }
                     },
                     shape=RoundedCornerShape((18f*s).dp),
                     color=if(selectedCategory==name) Color(0xFF30395A) else Color(0xEB26314D),

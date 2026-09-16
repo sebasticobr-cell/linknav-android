@@ -21,12 +21,19 @@ class BackendSearchProvider(private val baseUrl:String):SearchProvider {
             runCatching { nearbyPrefixPois(clean,near,8) }.getOrDefault(emptyList())
         } else emptyList()
 
+        val categoryResults = if(near != null) {
+            categoryAlias(clean)?.let { selector ->
+                runCatching { nearbyCategoryPois(selector,near,(limit*3).coerceAtMost(60)) }
+                    .getOrDefault(emptyList())
+            } ?: emptyList()
+        } else emptyList()
+
         val nearResults = runCatching { photonRequest(clean,near,limit) }.getOrDefault(emptyList())
         val broadResults = if(clean.length <= 3) {
             runCatching { photonRequest(clean,null,(limit/2).coerceAtLeast(4)) }.getOrDefault(emptyList())
         } else emptyList()
 
-        return (nearbyPrefix + nearResults + broadResults)
+        return (categoryResults + nearbyPrefix + nearResults + broadResults)
             .distinctBy { "${it.id}:${it.location.latitude}:${it.location.longitude}" }
             .take(limit)
     }
@@ -61,6 +68,67 @@ class BackendSearchProvider(private val baseUrl:String):SearchProvider {
         val root=JSONObject(read("https://photon.komoot.io/api/?q=$q&limit=$limit$bias"))
         val features=root.optJSONArray("features") ?: return emptyList()
         return List(features.length()){ i -> featureToPlace(features.getJSONObject(i),i) }
+    }
+
+    private fun categoryAlias(query:String):String? {
+        val q=normalize(query)
+        return when {
+            q.contains("restaur") || q=="comida" || q.contains("pizza") || q.contains("lanch") || q=="cafe" ->
+                """["amenity"~"restaurant|fast_food|cafe|bar|pub|food_court"]"""
+            q.contains("mercad") || q.contains("supermerc") || q.contains("atacad") ->
+                """["shop"~"supermarket|convenience|grocery|wholesale"]"""
+            q.contains("farmac") -> """["amenity"="pharmacy"]"""
+            q.contains("hospital") || q.contains("clinic") || q.contains("saude") ->
+                """["amenity"~"hospital|clinic|doctors|dentist"]"""
+            q.contains("posto") || q.contains("combust") -> """["amenity"~"fuel|charging_station"]"""
+            q.contains("hotel") || q.contains("pousad") || q.contains("hostel") ->
+                """["tourism"~"hotel|hostel|guest_house|motel"]"""
+            q.contains("banco") || q.contains("caixa") || q=="atm" -> """["amenity"~"bank|atm"]"""
+            q.contains("escola") || q.contains("faculd") || q.contains("univers") || q.contains("creche") ->
+                """["amenity"~"school|college|university|kindergarten"]"""
+            q.contains("academ") -> """["leisure"="fitness_centre"]"""
+            q.contains("padaria") || q.contains("bakery") -> """["shop"="bakery"]"""
+            q.contains("oficina") || q.contains("mecan") -> """["shop"~"car_repair|car_parts|tyres"]"""
+            q.contains("shopping") || q.contains("shopping center") -> """["shop"="mall"]"""
+            q.contains("estacion") -> """["amenity"="parking"]"""
+            q.contains("parque") || q.contains("praca") -> """["leisure"~"park|garden|playground"]"""
+            else -> null
+        }
+    }
+
+    private fun nearbyCategoryPois(selector:String,near:GeoPoint,limit:Int):List<PlaceResult>{
+        val overpass = """
+            [out:json][timeout:8];
+            (
+              nwr(around:10000,${near.latitude},${near.longitude})$selector["name"];
+            );
+            out center $limit;
+        """.trimIndent()
+        val url="https://overpass-api.de/api/interpreter?data="+URLEncoder.encode(overpass,"UTF-8")
+        val root=JSONObject(read(url))
+        val elements=root.optJSONArray("elements") ?: return emptyList()
+        val out=mutableListOf<PlaceResult>()
+        for(i in 0 until elements.length()){
+            val e=elements.getJSONObject(i)
+            val tags=e.optJSONObject("tags") ?: continue
+            val name=tags.optString("name")
+            if(name.isBlank()) continue
+            val lat:Double
+            val lon:Double
+            if(e.has("lat") && e.has("lon")){
+                lat=e.getDouble("lat"); lon=e.getDouble("lon")
+            } else {
+                val center=e.optJSONObject("center") ?: continue
+                lat=center.optDouble("lat",Double.NaN); lon=center.optDouble("lon",Double.NaN)
+                if(!lat.isFinite() || !lon.isFinite()) continue
+            }
+            val address=listOf(tags.optString("addr:street"),tags.optString("addr:housenumber"),tags.optString("addr:suburb"),tags.optString("addr:city"))
+                .filter { it.isNotBlank() }.distinct().joinToString(" • ")
+            val category=listOf(tags.optString("amenity"),tags.optString("shop"),tags.optString("tourism"),tags.optString("office"),tags.optString("leisure"),tags.optString("healthcare"))
+                .firstOrNull { it.isNotBlank() }
+            out += PlaceResult(id="osm-${e.optString("type")}-${e.optLong("id")}",name=name,address=address,location=GeoPoint(lat,lon),category=category)
+        }
+        return out.take(limit)
     }
 
     private fun nearbyPrefixPois(query:String,near:GeoPoint,limit:Int):List<PlaceResult>{
@@ -128,7 +196,7 @@ class BackendSearchProvider(private val baseUrl:String):SearchProvider {
     }
 
 
-    suspend fun nearbyIndex(near:GeoPoint,radiusM:Int=5000,limit:Int=320):List<PlaceResult> = runCatching {
+    suspend fun nearbyIndex(near:GeoPoint,radiusM:Int=5000,limit:Int=700):List<PlaceResult> = runCatching {
         val overpass = """
             [out:json][timeout:12];
             (
@@ -138,6 +206,10 @@ class BackendSearchProvider(private val baseUrl:String):SearchProvider {
               nwr(around:$radiusM,${near.latitude},${near.longitude})["name"]["office"];
               nwr(around:$radiusM,${near.latitude},${near.longitude})["name"]["leisure"];
               nwr(around:$radiusM,${near.latitude},${near.longitude})["name"]["craft"];
+              nwr(around:$radiusM,${near.latitude},${near.longitude})["name"]["healthcare"];
+              nwr(around:$radiusM,${near.latitude},${near.longitude})["name"]["historic"];
+              nwr(around:$radiusM,${near.latitude},${near.longitude})["name"]["public_transport"];
+              nwr(around:$radiusM,${near.latitude},${near.longitude})["name"]["building"];
               nwr(around:1600,${near.latitude},${near.longitude})["addr:housenumber"];
             );
             out center $limit;
@@ -261,7 +333,7 @@ class BackendSearchProvider(private val baseUrl:String):SearchProvider {
         east:Double,
         west:Double,
         zoom:Double,
-        limit:Int=420
+        limit:Int=1000
     ):List<PlaceResult> = runCatching {
         val selectors = when {
             zoom < 10.0 -> listOf(
@@ -289,7 +361,11 @@ class BackendSearchProvider(private val baseUrl:String):SearchProvider {
                 """nwr($south,$west,$north,$east)["leisure"]["name"];""",
                 """nwr($south,$west,$north,$east)["craft"]["name"];""",
                 """nwr($south,$west,$north,$east)["historic"]["name"];""",
-                """nwr($south,$west,$north,$east)["public_transport"]["name"];"""
+                """nwr($south,$west,$north,$east)["public_transport"]["name"];""",
+                """nwr($south,$west,$north,$east)["healthcare"]["name"];""",
+                """nwr($south,$west,$north,$east)["government"]["name"];""",
+                """nwr($south,$west,$north,$east)["sport"]["name"];""",
+                """nwr($south,$west,$north,$east)["building"]["name"];"""
             )
         }.map { it.replace("$south",south.toString())
                   .replace("$west",west.toString())
@@ -343,7 +419,11 @@ class BackendSearchProvider(private val baseUrl:String):SearchProvider {
                 tags.optString("leisure"),
                 tags.optString("craft"),
                 tags.optString("historic"),
-                tags.optString("public_transport")
+                tags.optString("public_transport"),
+                tags.optString("healthcare"),
+                tags.optString("government"),
+                tags.optString("sport"),
+                if(tags.optString("building").isNotBlank()) "building" else ""
             ).firstOrNull { it.isNotBlank() }
 
             out += PlaceResult(
@@ -373,6 +453,8 @@ class BackendSearchProvider(private val baseUrl:String):SearchProvider {
             "pharmacy" -> 65.0
             "restaurant","cafe","fast_food" -> 58.0
             "place_of_worship" -> 55.0
+            "building" -> if(zoom>=17.0) 52.0 else 28.0
+            "fitness_centre","parking","police","fire_station","townhall" -> 60.0
             else -> 42.0
         }
         return base + zoom

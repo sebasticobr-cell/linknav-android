@@ -35,7 +35,7 @@ class ViewportPoiRepository(
         val now=System.currentTimeMillis()
         val cached=read(key)
         val ttl=when {
-            viewport.zoom >= 16.0 -> 3L*60L*60L*1000L
+            viewport.zoom >= 16.0 -> 2L*60L*60L*1000L
             viewport.zoom >= 13.0 -> 6L*60L*60L*1000L
             else -> 12L*60L*60L*1000L
         }
@@ -44,11 +44,13 @@ class ViewportPoiRepository(
             return PoiLoadResult(cached.second,true,false)
         }
 
+        val latPad=(viewport.north-viewport.south).coerceAtLeast(0.0)*0.14
+        val lonPad=(viewport.east-viewport.west).coerceAtLeast(0.0)*0.14
         val fresh=provider.viewportPlaces(
-            north=viewport.north,
-            south=viewport.south,
-            east=viewport.east,
-            west=viewport.west,
+            north=viewport.north+latPad,
+            south=viewport.south-latPad,
+            east=viewport.east+lonPad,
+            west=viewport.west-lonPad,
             zoom=viewport.zoom
         )
 
@@ -73,13 +75,15 @@ class ViewportPoiRepository(
             v.zoom<12.0 -> 11
             v.zoom<14.0 -> 13
             v.zoom<16.0 -> 15
-            else -> 17
+            v.zoom<18.0 -> 17
+            else -> 19
         }
         val cell=when(band) {
             11 -> .08
             13 -> .04
             15 -> .02
-            else -> .009
+            17 -> .009
+            else -> .0045
         }
         val lat=floor(((v.north+v.south)/2.0)/cell).toInt()
         val lon=floor(((v.east+v.west)/2.0)/cell).toInt()
@@ -92,7 +96,7 @@ class ViewportPoiRepository(
         places:List<PlaceResult>
     ) {
         val array=JSONArray()
-        places.take(420).forEach { p ->
+        places.take(1000).forEach { p ->
             array.put(JSONObject().apply {
                 put("id",p.id)
                 put("name",p.name)
@@ -141,13 +145,13 @@ class ViewportPoiRepository(
     private fun trimCache() {
         val keys=prefs.getStringSet("keys",emptySet())
             ?.toMutableSet() ?: return
-        if(keys.size<=28) return
+        if(keys.size<=64) return
 
         val ordered=keys.mapNotNull { key ->
             read(key)?.first?.let { it to key }
         }.sortedBy { it.first }
 
-        val remove=ordered.take((keys.size-28).coerceAtLeast(0))
+        val remove=ordered.take((keys.size-64).coerceAtLeast(0))
         val editor=prefs.edit()
         remove.forEach { (_,key) ->
             editor.remove(key)

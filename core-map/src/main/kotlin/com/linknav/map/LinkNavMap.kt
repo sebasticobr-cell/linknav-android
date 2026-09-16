@@ -87,6 +87,58 @@ private fun userArrowBitmap():Bitmap {
     return bitmap
 }
 
+private fun userDotBitmap():Bitmap {
+    val size=128
+    val bitmap=Bitmap.createBitmap(size,size,Bitmap.Config.ARGB_8888)
+    val canvas=Canvas(bitmap)
+    val halo=Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color=AndroidColor.argb(58,45,128,255)
+        style=Paint.Style.FILL
+    }
+    val white=Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color=AndroidColor.WHITE
+        style=Paint.Style.FILL
+    }
+    val blue=Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color=AndroidColor.rgb(28,111,255)
+        style=Paint.Style.FILL
+    }
+    canvas.drawCircle(64f,64f,55f,halo)
+    canvas.drawCircle(64f,64f,29f,white)
+    canvas.drawCircle(64f,64f,21f,blue)
+    return bitmap
+}
+
+private fun tuneRoadmapStyle(style:Style) {
+    style.layers.forEach { layer ->
+        val id=layer.id.lowercase()
+        if(layer is SymbolLayer && (
+            id.contains("road") || id.contains("street") ||
+            id.contains("highway") || id.contains("transportation")
+        )) {
+            layer.setProperties(
+                textSize(
+                    Expression.interpolate(
+                        Expression.linear(),Expression.zoom(),
+                        Expression.stop(12,8.5f),
+                        Expression.stop(15,10.0f),
+                        Expression.stop(18,11.5f)
+                    )
+                ),
+                textHaloColor("#FFFFFF"),
+                textHaloWidth(1.2f)
+            )
+        }
+        if(layer is FillLayer && id.contains("building")) {
+            layer.setProperties(
+                fillColor("#E6E8ED"),
+                fillOutlineColor("#D5D9E1"),
+                fillOpacity(.94f)
+            )
+        }
+    }
+}
+
 private fun poiIconBitmap(hex:String,kind:String):Bitmap {
     val size=96
     val bitmap=Bitmap.createBitmap(size,size,Bitmap.Config.ARGB_8888)
@@ -234,7 +286,7 @@ fun LinkNavMap(
     satellite:Boolean=false,
     recenterToken:Int=0,
     northToken:Int=0,
-    styleUri:String="https://tiles.openfreemap.org/styles/liberty",
+    styleUri:String="https://tiles.openfreemap.org/styles/bright",
     showAttribution:Boolean=true,
     showAccuracy:Boolean=true,
     followZoom:Double=15.7,
@@ -280,7 +332,7 @@ fun LinkNavMap(
             )
             tiles.attribution="Tiles © Esri — Source: Esri and the GIS User Community"
             tiles.setMinZoom(0f)
-            tiles.setMaxZoom(17f)
+            tiles.setMaxZoom(19f)
             style.addSource(RasterSource(SAT_SOURCE,tiles,256))
             val raster=RasterLayer(SAT_LAYER,SAT_SOURCE).withProperties(
                 rasterOpacity(if(satellite) 1f else 0f),
@@ -290,7 +342,8 @@ fun LinkNavMap(
             if(firstLabel!=null) style.addLayerBelow(raster,firstLabel) else style.addLayerAt(raster,0)
         }
 
-        style.addImage(USER_IMAGE,userArrowBitmap())
+        tuneRoadmapStyle(style)
+        style.addImage(USER_IMAGE,userDotBitmap())
         style.addImage("poi-food",poiIconBitmap("#F57C00","food"))
         style.addImage("poi-health",poiIconBitmap("#E43C4A","health"))
         style.addImage("poi-fuel",poiIconBitmap("#168DDF","fuel"))
@@ -303,7 +356,7 @@ fun LinkNavMap(
 
         if(style.getLayer(ROUTE_LAYER)==null) {
             style.addLayer(LineLayer(ROUTE_LAYER,ROUTE_SOURCE).withProperties(
-                lineWidth(7f),lineOpacity(.94f),lineColor("#4B7CFF")
+                lineWidth(5.5f),lineOpacity(.92f),lineColor("#4B7CFF")
             ))
         }
 
@@ -325,14 +378,14 @@ fun LinkNavMap(
                 iconSize(
                     Expression.interpolate(
                         Expression.linear(),Expression.zoom(),
-                        Expression.stop(12,0.42f),
-                        Expression.stop(15,0.58f),
-                        Expression.stop(18,0.70f)
+                        Expression.stop(12,0.34f),
+                        Expression.stop(15,0.50f),
+                        Expression.stop(18,0.64f)
                     )
                 ),
                 iconAllowOverlap(false),iconIgnorePlacement(false)
             )
-            icons.minZoom=10.8f
+            icons.minZoom=10.5f
             style.addLayer(icons)
         }
 
@@ -342,9 +395,9 @@ fun LinkNavMap(
                 textSize(
                     Expression.interpolate(
                         Expression.linear(),Expression.zoom(),
-                        Expression.stop(13,10f),
-                        Expression.stop(16,11.5f),
-                        Expression.stop(19,13f)
+                        Expression.stop(13,9f),
+                        Expression.stop(16,10.5f),
+                        Expression.stop(19,12.5f)
                     )
                 ),
                 textColor(Expression.get("color")),
@@ -354,7 +407,7 @@ fun LinkNavMap(
                 textAllowOverlap(false),
                 textIgnorePlacement(false)
             )
-            labels.minZoom=11.8f
+            labels.minZoom=12.0f
             style.addLayer(labels)
         }
 
@@ -445,15 +498,23 @@ fun LinkNavMap(
                     rasterOpacity(if(satellite) 1f else 0f)
                 )
 
+                style.addImage(USER_IMAGE,if(route.size>=2) userArrowBitmap() else userDotBitmap())
+
                 point?.let { p ->
                     style.getSourceAs<GeoJsonSource>(USER_SOURCE)?.setGeoJson(
                         Feature.fromGeometry(Point.fromLngLat(p.longitude,p.latitude)).also {
                             it.addNumberProperty("bearing",p.bearingDeg)
                         }
                     )
-                    style.getSourceAs<GeoJsonSource>(USER_CONE_SOURCE)?.setGeoJson(
-                        Feature.fromGeometry(directionConePolygon(p))
-                    )
+                    if(route.size>=2) {
+                        style.getSourceAs<GeoJsonSource>(USER_CONE_SOURCE)?.setGeoJson(
+                            Feature.fromGeometry(directionConePolygon(p))
+                        )
+                    } else {
+                        style.getSourceAs<GeoJsonSource>(USER_CONE_SOURCE)?.setGeoJson(
+                            FeatureCollection.fromFeatures(emptyList<Feature>())
+                        )
+                    }
                     if(showAccuracy) {
                         style.getSourceAs<GeoJsonSource>(ACCURACY_SOURCE)?.setGeoJson(
                             Feature.fromGeometry(accuracyPolygon(p))
