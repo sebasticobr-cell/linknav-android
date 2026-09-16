@@ -52,6 +52,8 @@ private const val ACCURACY_SOURCE="linknav-accuracy-source"
 private const val ACCURACY_LAYER="linknav-accuracy-layer"
 private const val USER_SOURCE="linknav-user-source"
 private const val USER_LAYER="linknav-user-layer"
+private const val USER_CONE_SOURCE="linknav-user-cone-source"
+private const val USER_CONE_LAYER="linknav-user-cone-layer"
 private const val USER_IMAGE="linknav-user-arrow"
 private const val SAT_SOURCE="linknav-satellite-source"
 private const val SAT_LAYER="linknav-satellite-layer"
@@ -156,6 +158,31 @@ private fun poiIconBitmap(hex:String,kind:String):Bitmap {
     return bitmap
 }
 
+private fun directionConePolygon(point:GeoPoint):Polygon {
+    val lengthM=point.accuracyM.coerceIn(18f,70f).toDouble()+42.0
+    val halfAngle=24.0
+    val earth=6378137.0
+    val latRad=Math.toRadians(point.latitude)
+    fun projected(distanceM:Double,bearingDeg:Double):Point {
+        val b=Math.toRadians(bearingDeg)
+        val dLat=distanceM/earth*cos(b)
+        val dLon=distanceM/(earth*cos(latRad).coerceAtLeast(.1))*sin(b)
+        return Point.fromLngLat(
+            point.longitude+Math.toDegrees(dLon),
+            point.latitude+Math.toDegrees(dLat)
+        )
+    }
+    val bearing=point.bearingDeg.toDouble()
+    val ring=mutableListOf<Point>()
+    ring += Point.fromLngLat(point.longitude,point.latitude)
+    for(i in 0..10) {
+        val a=bearing-halfAngle+(halfAngle*2.0*i/10.0)
+        ring += projected(lengthM,a)
+    }
+    ring += Point.fromLngLat(point.longitude,point.latitude)
+    return Polygon.fromLngLats(listOf(ring))
+}
+
 private fun accuracyPolygon(point:GeoPoint):Polygon {
     val radius=point.accuracyM.coerceIn(3f,120f).toDouble()
     val earth=6378137.0
@@ -242,7 +269,7 @@ fun LinkNavMap(
     var lastNorth by remember { mutableIntStateOf(northToken) }
 
     fun configureStyle(style:Style) {
-        listOf(ROUTE_SOURCE,POI_SOURCE,SELECTED_SOURCE,ACCURACY_SOURCE,USER_SOURCE).forEach {
+        listOf(ROUTE_SOURCE,POI_SOURCE,SELECTED_SOURCE,ACCURACY_SOURCE,USER_SOURCE,USER_CONE_SOURCE).forEach {
             if(style.getSource(it)==null) style.addSource(GeoJsonSource(it))
         }
 
@@ -280,9 +307,15 @@ fun LinkNavMap(
             ))
         }
 
+        if(style.getLayer(USER_CONE_LAYER)==null) {
+            style.addLayer(FillLayer(USER_CONE_LAYER,USER_CONE_SOURCE).withProperties(
+                fillColor("#3F7EFF"),fillOpacity(.18f),fillOutlineColor("#5E8FFF")
+            ))
+        }
+
         if(style.getLayer(ACCURACY_LAYER)==null) {
             style.addLayer(FillLayer(ACCURACY_LAYER,ACCURACY_SOURCE).withProperties(
-                fillColor("#3F7EFF"),fillOpacity(.14f),fillOutlineColor("#79A0FF")
+                fillColor("#3F7EFF"),fillOpacity(.10f),fillOutlineColor("#79A0FF")
             ))
         }
 
@@ -299,7 +332,7 @@ fun LinkNavMap(
                 ),
                 iconAllowOverlap(false),iconIgnorePlacement(false)
             )
-            icons.minZoom=11.5f
+            icons.minZoom=10.8f
             style.addLayer(icons)
         }
 
@@ -321,14 +354,14 @@ fun LinkNavMap(
                 textAllowOverlap(false),
                 textIgnorePlacement(false)
             )
-            labels.minZoom=12.8f
+            labels.minZoom=11.8f
             style.addLayer(labels)
         }
 
         if(style.getLayer(USER_LAYER)==null) {
             style.addLayer(SymbolLayer(USER_LAYER,USER_SOURCE).withProperties(
                 iconImage(USER_IMAGE),
-                iconSize(.72f),
+                iconSize(.58f),
                 iconRotate(Expression.get("bearing")),
                 iconAllowOverlap(true),
                 iconIgnorePlacement(true)
@@ -417,6 +450,9 @@ fun LinkNavMap(
                         Feature.fromGeometry(Point.fromLngLat(p.longitude,p.latitude)).also {
                             it.addNumberProperty("bearing",p.bearingDeg)
                         }
+                    )
+                    style.getSourceAs<GeoJsonSource>(USER_CONE_SOURCE)?.setGeoJson(
+                        Feature.fromGeometry(directionConePolygon(p))
                     )
                     if(showAccuracy) {
                         style.getSourceAs<GeoJsonSource>(ACCURACY_SOURCE)?.setGeoJson(
